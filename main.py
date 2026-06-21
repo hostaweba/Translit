@@ -1405,8 +1405,16 @@ class HindiEditor(QtWidgets.QTextEdit):
                 self.sugg_popup.hide()
                 return
 
-        # Handle numbered shortcuts (Ctrl+1, Ctrl+2, etc.)
+        # Handle Control shortcuts (Numbered shortcuts and Dock Navigation)(Ctrl+1, Ctrl+2, etc.)
         if mods & Qt.KeyboardModifier.ControlModifier: 
+            # 1. Dock Navigation (Ctrl + Up / Ctrl + Down)
+            if self.state.suggestion_mode in ["Dock", "Both"] and self._has_dock_suggestions:
+                if key == Qt.Key.Key_Up or key == Qt.Key.Key_Down:
+                    step = -1 if key == Qt.Key.Key_Up else 1
+                    self.navigateSuggestion.emit(step)
+                    return
+
+            # 2. Numbered Inline Shortcuts (Ctrl + 1-9, 0)
             if self.sugg_popup.isVisible() and Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
                 num = key - Qt.Key.Key_0
                 idx = 10 if num == 0 else num
@@ -1416,20 +1424,20 @@ class HindiEditor(QtWidgets.QTextEdit):
                         self._insert_suggestion_text(item.data(Qt.ItemDataRole.UserRole))
                         self.insertPlainText(" ")
                 return
+            
+            # If it's a Ctrl shortcut we don't handle (like Ctrl+C, Ctrl+V), let parent handle it
             return super().keyPressEvent(ev)
 
+        # Tab key for Dock Insertion (when inline popup is NOT visible)
         if self.state.suggestion_mode in ["Dock", "Both"] and self._has_dock_suggestions and not self.sugg_popup.isVisible():
             if key == Qt.Key.Key_Tab:
                 self.insertSuggestionTrigger.emit()
                 return
-            if (key == Qt.Key.Key_Up or key == Qt.Key.Key_Down) and (mods & Qt.KeyboardModifier.ControlModifier):
-                step = -1 if key == Qt.Key.Key_Up else 1
-                self.navigateSuggestion.emit(step)
-                return
-            
+
         if self._english_mode:
             self.sugg_popup.hide()
             return super().keyPressEvent(ev)
+            
 
         if key in {Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Home, Qt.Key.Key_End}:
             if self._composing_latin: self._commit_composing()
@@ -1923,6 +1931,11 @@ class MainWindow(QtWidgets.QMainWindow):
         doc_h, doc_m = divmod(doc_m, 60)
         self.lbl_doc_time.setText(f"Doc: {doc_h:02d}:{doc_m:02d}:{doc_s:02d}")
 
+        # --- NEW: Update the Top Menu Clock ---
+        if hasattr(self, 'clock_label'):
+            # %H is 24-hour format, %M is minutes
+            self.clock_label.setText(datetime.now().strftime("%H:%M"))
+
     def resizeEvent(self, event):
         self.editor.sugg_popup.hide()
         super().resizeEvent(event)
@@ -2284,6 +2297,17 @@ class MainWindow(QtWidgets.QMainWindow):
         toolsm.addSeparator()
         toolsm.addAction("Set Autosave Interval...", self._set_autosave_interval)
 
+        # --- NEW: Menu Bar Clock ---
+        self.clock_label = QtWidgets.QLabel()
+        self.clock_label.setObjectName("TopClock")  
+        
+        # Align perfectly to the center-right to fill the height properly
+        self.clock_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        
+        # Place it in the corner
+        men.setCornerWidget(self.clock_label, Qt.Corner.TopRightCorner)
+        self.clock_label.setText(datetime.now().strftime("%H:%M"))
+
     def _open_phrase_manager(self):
         dlg = PhraseManagerDialog(self.state, self)
         dlg.exec()
@@ -2366,8 +2390,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _navigate_dock_suggestion_list(self, step: int):
         c = self.sugg_list.count()
         if c == 0: return
+        
         curr = self.sugg_list.currentRow()
-        new_row = (curr + step) % c
+        
+        # Calculate the new row and clamp it so it never goes below 0 or above the max count
+        new_row = max(0, min(curr + step, c - 1))
+        
         self.sugg_list.setCurrentRow(new_row)
 
     @QtCore.Slot()
@@ -2451,6 +2479,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 QMenuBar { background-color: #1f2937; border-bottom: 1px solid #374151; }
                 QMenuBar::item { padding: 6px 10px; border-radius: 4px; color: #f9fafb; }
                 QMenuBar::item:selected { background-color: #374151; }
+                    
+                /* THE PERFECTED DARK MODE CLOCK */
+                QLabel#TopClock { color: #4ade80; font-weight: 900; font-size: 22px; padding-right: 12px; margin: 0px; }
+                
+                QDockWidget { color: #f9fafb; font-weight: bold; }    
                 
                 QDockWidget { color: #f9fafb; font-weight: bold; }
                 QDockWidget::title { background-color: #1f2937; padding: 6px; text-align: left; }
@@ -2505,6 +2538,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 QMenuBar { background-color: #ffffff; border-bottom: 1px solid #e5e7eb; }
                 QMenuBar::item { padding: 6px 10px; border-radius: 4px; color: #111827; }
                 QMenuBar::item:selected { background-color: #f3f4f6; }
+                    
+                /* THE PERFECTED LIGHT MODE CLOCK */
+                QLabel#TopClock { color: darkgreen; font-weight: 900; font-size: 22px; padding-right: 12px; margin: 0px; }
+                
+                QDockWidget { color: #111827; font-weight: bold; }    
                 
                 QDockWidget { color: #111827; font-weight: bold; }
                 QDockWidget::title { background-color: #e5e7eb; padding: 6px; text-align: left; }
@@ -3138,7 +3176,9 @@ def main():
     # 1. Start fading out the splash screen after 2.8 seconds
     QTimer.singleShot(2800, start_fade_out)
     # 2. Show the main window underneath exactly as the splash finishes fading
-    QTimer.singleShot(3400, win.show)
+    # QTimer.singleShot(3400, win.show)
+    #QTimer.singleShot(3400, win.showFullScreen)
+    QTimer.singleShot(3400, win.showMaximized)
     
     sys.exit(app.exec())
 
