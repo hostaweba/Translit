@@ -778,6 +778,121 @@ class SuggestionsManagerDialog(QtWidgets.QDialog):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Scan Error", f"Failed to extract words: {str(e)}")
 
+class PhraseManagerDialog(QtWidgets.QDialog):
+    def __init__(self, state: AppState, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Phrase Database Manager")
+        self.resize(750, 500)
+        self.state = state
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self.lbl_info = QtWidgets.QLabel(f"<b>Total Phrases:</b> {len(self.state.phrases)}")
+        self.lbl_info.setStyleSheet("font-size: 14px; padding: 5px;")
+        layout.addWidget(self.lbl_info)
+
+        self.list_widget = QtWidgets.QListWidget()
+        self.list_widget.addItems(self.state.phrases)
+        layout.addWidget(self.list_widget)
+
+        btns_top = QtWidgets.QHBoxLayout()
+        self.btn_add = QtWidgets.QPushButton("Add Phrase")
+        self.btn_edit = QtWidgets.QPushButton("Edit Selected")
+        self.btn_remove = QtWidgets.QPushButton("Remove Selected")
+        self.btn_apply = QtWidgets.QPushButton("Apply (runtime)")
+        btns_top.addWidget(self.btn_add)
+        btns_top.addWidget(self.btn_edit)
+        btns_top.addWidget(self.btn_remove)
+        btns_top.addWidget(self.btn_apply)
+        layout.addLayout(btns_top)
+
+        btns_mid = QtWidgets.QHBoxLayout()
+        self.btn_load_def = QtWidgets.QPushButton("Load Default")
+        self.btn_save_def = QtWidgets.QPushButton("Save Default")
+        self.btn_load_man = QtWidgets.QPushButton("Load Manual File...")
+        self.btn_save_man = QtWidgets.QPushButton("Save Manual File...")
+        btns_mid.addWidget(self.btn_load_def)
+        btns_mid.addWidget(self.btn_save_def)
+        btns_mid.addWidget(self.btn_load_man)
+        btns_mid.addWidget(self.btn_save_man)
+        layout.addLayout(btns_mid)
+
+        self.btn_close = QtWidgets.QPushButton("Close")
+        layout.addWidget(self.btn_close, alignment=Qt.AlignmentFlag.AlignRight)
+
+        # Connections
+        self.btn_add.clicked.connect(self.add_phrase)
+        self.btn_edit.clicked.connect(self.edit_phrase)
+        self.btn_remove.clicked.connect(self.remove_phrase)
+        self.btn_apply.clicked.connect(self.apply_runtime)
+        self.btn_load_def.clicked.connect(self.load_default)
+        self.btn_save_def.clicked.connect(lambda: self.save_to_file(PHRASES_PATH))
+        self.btn_load_man.clicked.connect(self.load_manual)
+        self.btn_save_man.clicked.connect(lambda: self.save_to_file(None))
+        self.btn_close.clicked.connect(self.accept)
+
+    def update_label(self):
+        self.lbl_info.setText(f"<b>Total Phrases:</b> {self.list_widget.count()}")
+
+    def add_phrase(self):
+        txt, ok = QtWidgets.QInputDialog.getMultiLineText(self, "Add Phrase", "Enter new phrase:")
+        if ok and txt.strip():
+            self.list_widget.addItem(txt.strip())
+            self.update_label()
+
+    def edit_phrase(self):
+        item = self.list_widget.currentItem()
+        if item:
+            txt, ok = QtWidgets.QInputDialog.getMultiLineText(self, "Edit Phrase", "Edit phrase:", item.text())
+            if ok and txt.strip():
+                item.setText(txt.strip())
+
+    def remove_phrase(self):
+        row = self.list_widget.currentRow()
+        if row >= 0:
+            self.list_widget.takeItem(row)
+            self.update_label()
+
+    def apply_runtime(self):
+        self.state.phrases = [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
+        self.update_label()
+        QtWidgets.QMessageBox.information(self, "Applied", "Phrases applied to runtime memory.")
+
+    def save_to_file(self, target_path=None):
+        if not target_path:
+            target_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Phrases", "", "JSON Files (*.json)")
+            if not target_path: return
+        self.apply_runtime()
+        try:
+            with open(target_path, "w", encoding="utf-8") as f:
+                json.dump(self.state.phrases, f, ensure_ascii=False, indent=2)
+            QtWidgets.QMessageBox.information(self, "Saved", f"Saved successfully to: {target_path}")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Save failed", str(e))
+
+    def load_default(self):
+        if PHRASES_PATH.exists():
+            try:
+                with open(PHRASES_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self.list_widget.clear()
+                    self.list_widget.addItems(data)
+                    self.apply_runtime()
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Load failed", str(e))
+
+    def load_manual(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Manual Phrases", "", "JSON Files (*.json)")
+        if path:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self.list_widget.clear()
+                    self.list_widget.addItems(data)
+                    self.apply_runtime()
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Error", str(e))
 
 class CorrectionsDialog(QtWidgets.QDialog):
     def __init__(self, state: AppState, editor_ref: Optional[QtWidgets.QTextEdit] = None, parent=None):
@@ -1108,8 +1223,8 @@ class HindiEditor(QtWidgets.QTextEdit):
         self.sugg_popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground) 
         self.sugg_popup.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.sugg_popup.setObjectName("suggPopup")
-        self.sugg_popup.setFixedWidth(150) 
-        self.sugg_popup.itemClicked.connect(self._insert_selected_suggestion)
+        self.sugg_popup.setFixedWidth(240) 
+        self.sugg_popup.itemPressed.connect(self._insert_selected_suggestion)
         
         self.textChanged.connect(self._on_text_changed)
         self.cursorPositionChanged.connect(self._on_cursor_moved)
@@ -1161,31 +1276,89 @@ class HindiEditor(QtWidgets.QTextEdit):
         if self.state.suggestion_mode in ["Inline", "Both"] and matches:
             self.sugg_popup.clear()
             
-            # Fetch up to 11 to give shortcuts 1-9 and 0
-            for i, word in enumerate(matches[:11]):
+            import math # Required for accurate column sizing
+            
+            # Fetch user constraints safely from MainWindow
+            main_win = self.window()
+            columns = getattr(main_win, 'sugg_columns', 1)
+            rows = getattr(main_win, 'sugg_rows', 10)
+            show_nums = getattr(main_win, 'sugg_show_numbers', True)
+            
+            max_words = columns * rows
+            
+            # Forcefully disable scrollbars to prevent them from eating grid space
+            self.sugg_popup.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.sugg_popup.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            
+            if columns > 1:
+                self.sugg_popup.setFlow(QtWidgets.QListView.Flow.TopToBottom)
+                self.sugg_popup.setWrapping(True)
+                self.sugg_popup.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
+            else:
+                self.sugg_popup.setFlow(QtWidgets.QListView.Flow.TopToBottom)
+                self.sugg_popup.setWrapping(False)
+
+            for i, word in enumerate(matches[:max_words]):
                 item = QtWidgets.QListWidgetItem()
-                if i == 0:
-                    display = word
-                elif i < 10:
-                    display = f"[{i}] {word}"
+                if show_nums and i < 11:
+                    if i == 0: display = word
+                    elif i < 10: display = f"[{i}] {word}"
+                    else: display = f"[0] {word}"
                 else:
-                    display = f"[0] {word}"
+                    display = word
+                    
                 item.setText(display)
                 item.setData(Qt.ItemDataRole.UserRole, word)
                 self.sugg_popup.addItem(item)
                 
             self.sugg_popup.setCurrentRow(0)
-            
+
+            # ==========================================
+            # FLAWLESS GRID CALCULATION MATH
+            # ==========================================
             rect = self.cursorRect()
             pt = self.viewport().mapToGlobal(rect.bottomLeft())
             pt.setY(pt.y() + 5)
             
-            item_h = self.sugg_popup.sizeHintForRow(0) or 25
-            total_h = min(11, len(matches)) * item_h + 10
+            item_h = self.sugg_popup.sizeHintForRow(0)
+            if item_h <= 0: item_h = 32 # Fallback
+            
+            actual_items = min(len(matches), max_words)
+            actual_rows = min(rows, actual_items)
+            
+            # Add a 6px buffer to the height. This stops Qt from thinking
+            # it has run out of space and wrapping items to a second column early.
+            frame_offset = self.sugg_popup.frameWidth() * 2
+            total_h = (item_h * actual_rows) + frame_offset + 6
+            
+            col_width = 170
+            if columns > 1:
+                self.sugg_popup.setGridSize(QtCore.QSize(col_width, item_h))
+                
+                # Math.ceil accurately decides how many columns are needed based on active items
+                actual_cols = math.ceil(actual_items / rows)
+                actual_cols = max(1, min(actual_cols, columns))
+                
+                total_w = (col_width * actual_cols) + frame_offset + 6
+                self.sugg_popup.setFixedWidth(total_w)
+            else:
+                self.sugg_popup.setGridSize(QtCore.QSize()) # Reset grid
+                self.sugg_popup.setFixedWidth(240)
+
             self.sugg_popup.setFixedHeight(total_h)
             
+            # Screen boundary collision logic
+            screen = QtGui.QGuiApplication.screenAt(pt)
+            if screen:
+                screen_geom = screen.availableGeometry()
+                if pt.x() + self.sugg_popup.width() > screen_geom.right():
+                    pt.setX(screen_geom.right() - self.sugg_popup.width() - 10)
+                if pt.y() + self.sugg_popup.height() > screen_geom.bottom():
+                    pt.setY(self.viewport().mapToGlobal(rect.topLeft()).y() - self.sugg_popup.height() - 5)
+
             self.sugg_popup.move(pt)
             self.sugg_popup.show()
+
         else:
             self.sugg_popup.hide()
 
@@ -1503,6 +1676,20 @@ class MainWindow(QtWidgets.QMainWindow):
         # Load the saved state (defaults to False/Light Mode if not found)The default is now True (Dark Mode) for new users
         self.dark_mode_enabled = self.settings.value("dark_mode", True, type=bool)
         
+      
+        # --- NEW: Advanced Popup Preferences ---
+        self.sugg_style = self.settings.value("sugg_style", "Google (Search Style)", type=str)
+        self.sugg_font_size = int(self.settings.value("sugg_font_size", 14))
+        self.sugg_show_numbers = self.settings.value("sugg_show_numbers", True, type=bool)
+        
+        # Grid & Layout Settings
+        self.sugg_columns = int(self.settings.value("sugg_columns", 1))
+        self.sugg_rows = int(self.settings.value("sugg_rows", 10))
+        self.sugg_spacing = self.settings.value("sugg_spacing", "Normal", type=str)
+        
+        self.sugg_text_color = self.settings.value("sugg_text_color", "", type=str)
+        self.sugg_bold = self.settings.value("sugg_bold", False, type=bool)
+        
         self.printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         
         
@@ -1585,6 +1772,143 @@ class MainWindow(QtWidgets.QMainWindow):
         
         # Initialize app silently without triggering useless startup dialogs
         QTimer.singleShot(0, lambda: self._new_file(prompt_autosave=False, is_startup=True))
+
+    def _change_sugg_columns(self):
+        val, ok = QtWidgets.QInputDialog.getInt(self, "Popup Layout", "Number of Columns:", self.sugg_columns, 1, 5)
+        if ok:
+            self.sugg_columns = val
+            self.settings.setValue("sugg_columns", val)
+            self._apply_popup_style()
+
+    def _change_sugg_rows(self):
+        val, ok = QtWidgets.QInputDialog.getInt(self, "Popup Layout", "Words per Column (Rows):", self.sugg_rows, 3, 30)
+        if ok:
+            self.sugg_rows = val
+            self.settings.setValue("sugg_rows", val)
+            self._apply_popup_style()
+
+    def _change_sugg_spacing(self, spacing_level):
+        self.sugg_spacing = spacing_level
+        self.settings.setValue("sugg_spacing", spacing_level)
+        self._apply_popup_style()
+
+    def _change_sugg_max_words(self):
+        val, ok = QtWidgets.QInputDialog.getInt(self, "Max Words", "Number of suggestions to show:", self.sugg_max_words, 3, 30)
+        if ok:
+            self.sugg_max_words = val
+            self.settings.setValue("sugg_max_words", val)
+
+    def _change_sugg_color(self):
+        col = QtWidgets.QColorDialog.getColor(parent=self, title="Choose Suggestion Text Color")
+        if col.isValid():
+            self.sugg_text_color = col.name()
+            self.settings.setValue("sugg_text_color", self.sugg_text_color)
+            self._apply_popup_style()
+
+    def _reset_sugg_color(self):
+        self.sugg_text_color = ""
+        self.settings.setValue("sugg_text_color", "")
+        self._apply_popup_style()
+
+    def _toggle_sugg_bold(self, checked):
+        self.sugg_bold = checked
+        self.settings.setValue("sugg_bold", checked)
+        self._apply_popup_style()
+
+    def _toggle_sugg_numbers(self, checked):
+        self.sugg_show_numbers = checked
+        self.settings.setValue("sugg_show_numbers", checked)
+
+    def _change_popup_style(self, style_name):
+        self.sugg_style = style_name
+        self.settings.setValue("sugg_style", style_name)
+        self._apply_popup_style()
+
+    def _change_popup_font_size(self):
+        size, ok = QtWidgets.QInputDialog.getInt(self, "Popup Font Size", "Enter font size (px):", self.sugg_font_size, 8, 48)
+        if ok:
+            self.sugg_font_size = size
+            self.settings.setValue("sugg_font_size", size)
+            self._apply_popup_style()
+
+    def _apply_popup_style(self):
+        if self.sugg_style == "Default (OS Native)":
+            self.editor.sugg_popup.setStyleSheet("")
+            font = self.editor.sugg_popup.font()
+            font.setPointSize(self.sugg_font_size)
+            font.setBold(self.sugg_bold)
+            self.editor.sugg_popup.setFont(font)
+            return
+
+        is_dark = self.dark_mode_enabled
+        bg = "rgba(31, 41, 55, 245)" if is_dark else "rgba(255, 255, 255, 250)"
+        border = "#4b5563" if is_dark else "#d1d5db"
+        fg = self.sugg_text_color if self.sugg_text_color else ("#f9fafb" if is_dark else "#111827")
+        size = self.sugg_font_size
+        fw = "bold" if self.sugg_bold else "normal"
+
+        # Dynamic Spacing Control (NO MARGINS - Prevents unclickable dead zones!)
+        if self.sugg_spacing == "Compact":
+            pad = "4px 8px"
+        elif self.sugg_spacing == "Relaxed":
+            pad = "12px 16px"
+        else: # Normal
+            pad = "8px 12px"
+
+        if self.sugg_style == "Google (Search Style)":
+            g_bg = "#202124" if is_dark else "#ffffff"
+            g_fg = "#e8eaed" if is_dark else "#202124"
+            g_sel = "#3c4043" if is_dark else "#f1f3f4"
+            g_hov = "rgba(255, 255, 255, 0.1)" if is_dark else "rgba(0, 0, 0, 0.05)"
+            g_border = "#5f6368" if is_dark else "#dfe1e5"
+            
+            css = f"""
+                QListWidget {{ background-color: {g_bg}; color: {g_fg}; border: 1px solid {g_border}; border-radius: 8px; font-size: {size}px; font-weight: {fw}; outline: none; }}
+                QListWidget::item {{ padding: {pad}; border-radius: 0px; }}
+                QListWidget::item:hover {{ background-color: {g_hov}; }}
+                QListWidget::item:selected {{ background-color: {g_sel}; color: {g_fg}; }}
+            """
+        elif self.sugg_style == "Modern":
+            sel_bg = "#3b82f6"
+            hov_bg = "rgba(59, 130, 246, 0.2)"
+            css = f"""
+                QListWidget {{ background-color: {bg}; color: {fg}; border: 1px solid {border}; border-radius: 12px; font-size: {size}px; font-weight: {fw}; outline: none; }}
+                QListWidget::item {{ padding: {pad}; border-radius: 6px; }}
+                QListWidget::item:hover {{ background-color: {hov_bg}; }}
+                QListWidget::item:selected {{ background-color: {sel_bg}; color: white; }}
+            """
+        elif self.sugg_style == "Minimalist":
+            accent = "#10b981"
+            sel_bg = "rgba(16, 185, 129, 0.15)" if is_dark else "rgba(16, 185, 129, 0.2)"
+            hov_bg = "rgba(16, 185, 129, 0.08)"
+            css = f"""
+                QListWidget {{ background-color: {bg}; color: {fg}; border-left: 4px solid {accent}; border-top: 1px solid {border}; border-right: 1px solid {border}; border-bottom: 1px solid {border}; font-size: {size}px; font-weight: {fw}; outline: none; }}
+                QListWidget::item {{ padding: {pad}; border-bottom: 1px solid transparent; }}
+                QListWidget::item:hover {{ background-color: {hov_bg}; }}
+                QListWidget::item:selected {{ background-color: {sel_bg}; color: {accent}; }}
+            """
+        elif self.sugg_style == "Neon":
+            accent = "#38bdf8" if is_dark else "#0ea5e9"
+            neon_fg = self.sugg_text_color if self.sugg_text_color else accent
+            hov_bg = "rgba(56, 189, 248, 0.15)" if is_dark else "rgba(14, 165, 233, 0.15)"
+            css = f"""
+                QListWidget {{ background-color: #0f172a; color: {neon_fg}; border: 2px solid {accent}; border-radius: 8px; font-size: {size}px; font-weight: {fw}; outline: none; }}
+                QListWidget::item {{ padding: {pad}; border-radius: 4px; }}
+                QListWidget::item:hover {{ background-color: {hov_bg}; }}
+                QListWidget::item:selected {{ background-color: {accent}; color: #0f172a; font-weight: bold; }}
+            """
+        else: # Classic
+            sel_bg = "#059669"
+            hov_bg = "rgba(5, 150, 105, 0.15)"
+            css = f"""
+                QListWidget {{ background-color: {bg}; color: {fg}; border: 1px solid {border}; border-radius: 8px; font-size: {size}px; font-weight: {fw}; outline: none; }}
+                QListWidget::item {{ padding: {pad}; border-radius: 4px; }}
+                QListWidget::item:hover {{ background-color: {hov_bg}; }}
+                QListWidget::item:selected {{ background-color: {sel_bg}; color: white; }}
+            """
+
+        self.editor.sugg_popup.setStyleSheet(css)
+
 
     def _on_timer_tick(self):
         self.app_seconds += 1
@@ -1705,6 +2029,7 @@ class MainWindow(QtWidgets.QMainWindow):
         elif action == "table_right": self.editor._align_table(Qt.AlignmentFlag.AlignRight)
 
     def _setup_actions(self):
+                
         self.act_new = QtGui.QAction("New", self, shortcut="Ctrl+N", triggered=lambda: self._new_file(prompt_autosave=True))
         self.act_open = QtGui.QAction("Open", self, shortcut="Ctrl+O", triggered=self._open_file)
         self.act_save = QtGui.QAction("Save", self, shortcut="Ctrl+S", triggered=self._save_manual)
@@ -1722,6 +2047,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.act_sugg_manager = QtGui.QAction("Suggestion Database Manager...", self, triggered=self._open_suggestion_trainer)
         self.act_translit = QtGui.QAction("Toggle Translit", self, shortcut="Ctrl+T", triggered=self._toggle_transliteration)
         self.act_theme = QtGui.QAction("Theme", self, shortcut="Ctrl+D", triggered=self._toggle_theme)
+        self.act_phrase_manager = QtGui.QAction("Phrase Database Manager...", self, triggered=self._open_phrase_manager)
         
         self.view_grp = QtGui.QActionGroup(self)
         self.act_view_web = QtGui.QAction("Web Layout (Default)", self, checkable=True)
@@ -1885,17 +2211,85 @@ class MainWindow(QtWidgets.QMainWindow):
         suggm.addAction(self.act_sugg_dock)
         suggm.addAction(self.act_sugg_inline)
         suggm.addAction(self.act_sugg_both)
+        
+
+        # --- NEW: Master Popup Design Menu ---
+        popup_design_menu = viewm.addMenu("Suggestion Popup Settings")
+        
+        # 1. Styles
+        style_menu = popup_design_menu.addMenu("Visual Theme")
+        self.style_grp = QtGui.QActionGroup(self)
+        for s_name in ["Default (OS Native)", "Classic", "Modern", "Minimalist", "Neon", "Google (Search Style)"]:
+            act = QtGui.QAction(s_name, self, checkable=True)
+            if self.sugg_style == s_name: act.setChecked(True)
+            act.triggered.connect(lambda checked, name=s_name: self._change_popup_style(name))
+            self.style_grp.addAction(act)
+            style_menu.addAction(act)
+            
+        # 2. Grid & Columns
+        grid_menu = popup_design_menu.addMenu("Grid & Multi-Column Setup")
+        act_cols = QtGui.QAction("Set Number of Columns...", self)
+        act_cols.triggered.connect(self._change_sugg_columns)
+        act_rows = QtGui.QAction("Set Words per Column (Rows)...", self)
+        act_rows.triggered.connect(self._change_sugg_rows)
+        grid_menu.addAction(act_cols)
+        grid_menu.addAction(act_rows)
+
+        # 3. Spacing (Compact/Normal)
+        space_menu = popup_design_menu.addMenu("Line Spacing (Density)")
+        self.space_grp = QtGui.QActionGroup(self)
+        for sp_name in ["Compact", "Normal", "Relaxed"]:
+            act = QtGui.QAction(sp_name, self, checkable=True)
+            if self.sugg_spacing == sp_name: act.setChecked(True)
+            act.triggered.connect(lambda checked, name=sp_name: self._change_sugg_spacing(name))
+            self.space_grp.addAction(act)
+            space_menu.addAction(act)
+
+        popup_design_menu.addSeparator()
+
+        # 4. Typography & Toggles
+        act_font_size = QtGui.QAction("Set Font Size...", self)
+        act_font_size.triggered.connect(self._change_popup_font_size)
+        popup_design_menu.addAction(act_font_size)
+
+        act_bold = QtGui.QAction("Bold Text", self, checkable=True)
+        act_bold.setChecked(self.sugg_bold)
+        act_bold.triggered.connect(self._toggle_sugg_bold)
+        popup_design_menu.addAction(act_bold)
+        
+        act_nums = QtGui.QAction("Show Shortcut Numbers", self, checkable=True)
+        act_nums.setChecked(self.sugg_show_numbers)
+        act_nums.triggered.connect(self._toggle_sugg_numbers)
+        popup_design_menu.addAction(act_nums)
+
+        color_menu = popup_design_menu.addMenu("Text Color")
+        act_color = QtGui.QAction("Set Custom Text Color...", self)
+        act_color.triggered.connect(self._change_sugg_color)
+        act_reset_col = QtGui.QAction("Reset to Auto Color", self)
+        act_reset_col.triggered.connect(self._reset_sugg_color)
+        color_menu.addAction(act_color)
+        color_menu.addAction(act_reset_col)
+        
+                
         viewm.addSeparator()
         viewm.addAction(self.act_word_wrap)
 
         toolsm = men.addMenu("&Tools")
         toolsm.addAction(self.act_dict)
         toolsm.addAction(self.act_sugg_manager)
+        toolsm.addAction(self.act_phrase_manager)
         toolsm.addSeparator()
         toolsm.addAction(self.act_translit)
         toolsm.addAction(self.act_theme)
         toolsm.addSeparator()
         toolsm.addAction("Set Autosave Interval...", self._set_autosave_interval)
+
+    def _open_phrase_manager(self):
+        dlg = PhraseManagerDialog(self.state, self)
+        dlg.exec()
+        # Refresh the sidebar dock after the manager closes
+        self.ph_list.clear()
+        self.ph_list.addItems(self.state.phrases)
 
     def _build_sidebar(self):
         self.dock = QtWidgets.QDockWidget("Phrases", self)
@@ -2192,6 +2586,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.setValue("dark_mode", self.dark_mode_enabled)
         
         self._apply_theme()
+        self._apply_popup_style()
         self._update_view_mode()
 
     def _insert_template_safe(self, html: str):
