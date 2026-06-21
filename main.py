@@ -2307,43 +2307,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Place it in the corner
         men.setCornerWidget(self.clock_label, Qt.Corner.TopRightCorner)
         self.clock_label.setText(datetime.now().strftime("%H:%M"))
-        
-        # --- THE CUTE CHAMELEON & CLOCK WIDGET ---
-        self.corner_widget = QtWidgets.QWidget()
-        self.corner_layout = QtWidgets.QHBoxLayout(self.corner_widget)
-        self.corner_layout.setContentsMargins(0, 0, 12, 0) # 12px natural padding from right edge
-        self.corner_layout.setSpacing(6)
-        
-        # 1. The Chameleon Emoji
-        self.chameleon_anim_label = QtWidgets.QLabel("🦎")
-        self.chameleon_anim_label.setFont(QtGui.QFont("Segoe UI Emoji", 14))
-        
-        # Add the Color-Shifting Graphics Effect to the Chameleon
-        self.cham_effect = QtWidgets.QGraphicsColorizeEffect(self.chameleon_anim_label)
-        self.cham_effect.setStrength(1.0) # Full color override
-        self.chameleon_anim_label.setGraphicsEffect(self.cham_effect)
-        
-        # Animate the Chameleon cycling through magical colors
-        self.cham_anim = QtCore.QPropertyAnimation(self.cham_effect, b"color")
-        self.cham_anim.setDuration(4000) # 4 seconds per cycle
-        self.cham_anim.setStartValue(QtGui.QColor("#4ade80")) # Light Green
-        self.cham_anim.setKeyValueAt(0.33, QtGui.QColor("#38bdf8")) # Blue
-        self.cham_anim.setKeyValueAt(0.66, QtGui.QColor("#fbbf24")) # Orange
-        self.cham_anim.setEndValue(QtGui.QColor("#4ade80"))
-        self.cham_anim.setLoopCount(-1) # Infinite loop
-        self.cham_anim.start()
-
-        # 2. The Clock
-        self.clock_label = QtWidgets.QLabel()
-        self.clock_label.setObjectName("TopClock")
-        self.clock_label.setText(datetime.now().strftime("%H:%M"))
-        
-        # Assemble them
-        self.corner_layout.addWidget(self.chameleon_anim_label)
-        self.corner_layout.addWidget(self.clock_label)
-        
-        # Mount them into the corner of the Menu Bar
-        men.setCornerWidget(self.corner_widget, Qt.Corner.TopRightCorner)
 
     def _open_phrase_manager(self):
         dlg = PhraseManagerDialog(self.state, self)
@@ -2570,7 +2533,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 QTextEdit { background-color: transparent; color: #f9fafb; border: none; }
                 
                 /* THE PERFECTED COMPACT CLOCK */
-                QLabel#TopClock { color: #4ade80; font-weight: 800; font-size: 18px; margin: 0px; }
+                QLabel#TopClock { color: #4ade80; font-weight: 800; font-size: 18px; padding-right: 12px; margin: 0px; }
                 
                 QTableWidget QLineEdit { background-color: #374151; color: #ffffff; border: none; padding: 0px; margin: 0px; outline: none; }
             """)
@@ -2656,7 +2619,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 QTextEdit { background-color: transparent; color: #000000; border: none; }
                 
                 /* THE PERFECTED COMPACT CLOCK */
-                QLabel#TopClock { color: darkgreen; font-weight: 800; font-size: 18px; margin: 0px; }
+                QLabel#TopClock { color: darkgreen; font-weight: 800; font-size: 18px; padding-right: 12px; margin: 0px; }
                 
                 QTableWidget QLineEdit { background-color: #ffffff; color: #000000; border: none; padding: 0px; margin: 0px; outline: none; }
             """)
