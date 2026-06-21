@@ -1,91 +1,109 @@
-# 📝 Translit - Document Maker
+# Translit - Document Maker
 
-A professional, high-performance Rich Text Editor tailored specifically for seamless Hindi typing. Built with Python and PySide6, this application combines real-time phonetic transliteration, voice typing, advanced dictionary management, and native DOCX/PDF handling into a single, offline-capable productivity suite.
+**Translit** is a professional, high-performance WYSIWYG rich-text editor built with PySide6. Designed specifically for bilingual (Hindi/English) workflows, it features real-time phonetic (ITRANS) to Devanagari transliteration, integrated voice typing, and an advanced templating system.
 
-## ✨ Key Features
-
-### ⌨️ Typing & Input
-
-* **Real-time Transliteration:** Type phonetically in English (Latin) and watch it instantly convert to Devanagari (Hindi) without lag.
-* **Voice Typing (Speech-to-Text):** Hold `Ctrl+L` to dictate in Hindi using the Google Speech Recognition API. Release to seamlessly insert the transliterated text.
-* **Smart Dictionary Training:** Easily add custom Latin-to-Devanagari word mappings. Scan entire `.txt`, `.docx`, or `.xlsx` files to automatically extract new words and train your custom dictionary.
-* **Quick Phrases & Templates:** A dedicated sidebar to save and insert frequently used phrases, plus built-in professional templates (Question Papers, Applications, Declarations).
-
-### 📄 Document Formatting & View
-
-* **Rich Text Editing:** Full support for Bold, Italic, Underline, Strikethrough, Text Color, Highlighting, Bullet/Numbered Lists, and Tables.
-* **Print Layout View:** Toggle a true-to-life "Print Layout" view that simulates an A4 (or custom-sized) physical paper on a desk.
-* **Dark Mode & Full Screen:** Built-in Dark Mode that intuitively handles page colors, and a distraction-free Full Screen mode (`F11`).
-* **Page Setup & Print Preview:** Configure margins, paper size, and orientation with native Print Preview support.
-
-### 💾 File Management & Export
-
-* **Native DOCX Export:** Generates clean MS Word (`.docx`) files, preserving inline images, custom fonts, tables, and rich text styles.
-* **PDF Export:** Direct, high-resolution PDF generation.
-* **Multi-Format Import:** Open and read `.docx`, `.html`, `.txt`, `.csv`, `.xlsx`, and `.ods` files directly into the editor.
-* **Continuous Autosave:** Never lose your work. Prompts you to enable background autosaving (customizable intervals) on new documents.
-* **Word Integration:** Direct "Insert into Word" functionality via OLE automation (Windows only).
+With native DOCX and PDF export, highly customizable UI themes, and smart adaptive dictionaries, Translit bridges the gap between simple text editors and full-fledged office suites.
 
 ---
 
-## 🛠️ Prerequisites & Installation
+## 🌟 Key Features
 
-This application requires **Python 3.8+**. It heavily relies on several third-party libraries for its extended feature set.
+### 🔠 Intelligent Typing & Transliteration
 
-### 1. Install Dependencies
+* **Real-Time Transliteration:** Type phonetically in Latin (e.g., *kya* -> *क्या*) with instant conversion.
+* **English/Hinglish Toggle:** Instantly switch between Hindi transliteration and standard English typing.
+* **Smart Suggestions:** Auto-complete suggestions available via an inline popup or a dedicated sidebar dock.
+* **Voice Typing (Speech-to-Text):** Hold a hotkey to dictate in Hindi directly into the editor.
 
-Open your terminal or command prompt and run the following command to install all required packages:
+### 📄 Professional Document Management
+
+* **Rich Format Support:** Open, edit, and save as native `.docx`, `.pdf`, `.html`, and `.txt`.
+* **Print & Page Layouts:** Switch between Web layout, Portrait (Canvas), and Landscape views for accurate print representation.
+* **Advanced Formatting:** Bold, italics, lists (bulleted/numbered), superscript, subscript, text/highlight colors, and dynamic table insertions.
+* **Image Support:** Insert, scale, and align images directly within the document.
+
+### 🛠️ Advanced Tools & Automation
+
+* **Dictionary Training:** Manually train custom Latin-to-Devanagari mappings for specific vocabulary.
+* **Document Scanner:** Extract unique words from PDFs, Word files, and Spreadsheets (CSV/XLSX) to populate your custom suggestion database.
+* **Template Manager:** Create, edit, and reuse HTML-based document templates (e.g., Question Papers, Applications, Declarations).
+* **Phrase Manager:** Save frequently used phrases or greetings and insert them with a single click.
+
+### 🎨 Customizable UI
+
+* **Chameleon Theme Engine:** Seamlessly toggle between Ultra-Compact Dark and Light modes.
+* **Customizable Popups:** Tailor the suggestion popup's style (Classic, Modern, Neon, Google Search), grid layout, spacing, and colors.
+* **Productivity Timers:** Built-in status bar trackers monitor app uptime and active document session times.
+
+---
+
+## ⚙️ Requirements & Installation
+
+Translit requires **Python 3.8+**. It heavily relies on `PySide6` for the interface and uses several optional libraries to unlock its full potential.
+
+### 1. Install Core Dependencies
 
 ```bash
-pip install PySide6 indic-transliteration python-docx pandas openpyxl odfpy SpeechRecognition PyAudio Pillow pywin32
+pip install PySide6 indic-transliteration
 
 ```
 
-*Note: `PyAudio` is required for microphone input. If you are on Windows and face issues installing PyAudio, you may need to use `pipwin` or install the pre-compiled wheel.*
-*Note: `pywin32` is for Windows users only.*
+### 2. Install Feature-Specific Dependencies (Highly Recommended)
 
-### 2. Running the Application
+To enable all features (DOCX export, Speech Recognition, PDF parsing, Excel scanning), install the following:
 
-Save the main script as `main.py` and run it via Python:
+```bash
+# For native DOCX support
+pip install python-docx
+
+# For Speech Recognition (requires PyAudio)
+pip install SpeechRecognition PyAudio
+
+# For parsing PDFs and Spreadsheets to train the dictionary
+pip install PyPDF2 pandas openpyxl odfpy
+
+```
+
+### 3. Run the Application
 
 ```bash
 python main.py
 
 ```
 
+*(Replace `main.py` with the actual filename of your script).*
+**
 ---
 
 ## ⌨️ Keyboard Shortcuts
 
 | Shortcut | Action |
 | --- | --- |
-| **`Ctrl + L`** | **Hold** to start voice typing (Release to insert) |
-| **`Ctrl + T`** | Toggle Phonetic Transliteration (On/Off) |
-| **`Ctrl + Shift + C`** | Open Dictionary / Corrections Editor |
-| **`Ctrl + D`** | Toggle Dark Mode |
-| **`F11`** | Toggle Full Screen |
-| **`Ctrl + + / -`** | Zoom In / Zoom Out |
-| **`Ctrl + Shift + D`** | Insert Current Date & Time |
-| **`Ctrl + F`** | Find and Replace |
-| **`Ctrl + P`** | Print / Print Preview |
-| **`Ctrl + N` / `O` / `S**` | New, Open, Save Document |
+| **`Ctrl` + `Space`** | Toggle English (Hinglish) / Hindi Transliteration mode |
+| Hold **`Ctrl` + `L`** | Activate Speech-to-Text (Voice Typing) |
+| **`Ctrl` + `T`** | Toggle Transliteration Engine ON/OFF completely |
+| **`Ctrl` + `D`** | Toggle Dark / Light Theme |
+| **`Ctrl` + `N` / `O` / `S`** | New, Open, Save Document |
+| **`Ctrl` + `P`** | Open Print / PDF Export Preview |
+| **`Ctrl` + `F`** | Find and Replace |
+| **`Ctrl` + `Shift` + `C`** | Open Correction Dictionary |
+| **`Ctrl` + `Shift` + `D`** | Insert Current Date/Time |
+| **`Ctrl` + `1-9, 0`** | Insert the corresponding numbered suggestion from the popup |
+| **`Ctrl` + `↑` / `↓`** | Navigate the suggestion list in the Sidebar Dock |
+| **`Tab`** | Insert the selected suggestion (Dock or Inline) |
 
 ---
 
-## 🗂️ Supported File Formats
+## 📂 User Data Directory
 
-**Read / Import:**
+Translit automatically saves user preferences, custom dictionaries, phrases, and templates in the standard application data folder for your OS.
 
-* Text / Web: `.txt`, `.html`, `.htm`
-* Word Processors: `.docx` (via `python-docx`)
-* Spreadsheets: `.csv`, `.xlsx`, `.ods` (via `pandas` & `openpyxl`)
+* **Windows:** `C:\Users\<User>\AppData\Roaming\.hindi_office_wysiwyg\`
+* **macOS / Linux:** `~/.hindi_office_wysiwyg/`
 
-**Write / Export:**
+**Generated JSON files include:**
 
-* Documents: `.docx`, `.pdf`, `.html`, `.txt`
-
----
-
-## 🧠 Dictionary File Scanner Note
-
-If you have existing documents full of English/Latin abbreviations or custom names that you want to map to Devanagari, open the **Dictionary (Ctrl+Shift+C)** and click **"Scan/Extract Words from File..."**. The app will parse the document, extract all non-numeric tokens, and add the missing ones to your dictionary grid so you can define their Hindi translations rapidly.
+* `user_translit.json` (Your custom typing mappings)
+* `suggestions.json` (Your extracted autocomplete database)
+* `phrases.json` (Quick-insert phrases)
+* `templates.json` (Saved document templates)
