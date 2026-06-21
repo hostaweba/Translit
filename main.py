@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import tempfile
+import difflib
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +57,13 @@ try:
 except Exception:
     sr = None
     HAS_SR = False
+
+try:
+    import PyPDF2
+    HAS_PDF = True
+except Exception:
+    PyPDF2 = None
+    HAS_PDF = False
 
 APP_NAME = "Translit"
 USER_DIR = Path(
@@ -159,6 +167,10 @@ class AppState:
     })
     active_dict_name: str = "Default (user_translit.json)"
     active_sugg_name: str = "Default (suggestions.json)"
+    
+    view_mode: str = "Portrait"
+    # FIX: Change default from "Both" to "Inline" so the left dock is hidden on startup
+    suggestion_mode: str = "Inline"
 
     def load(self):
         if USER_DICT_PATH.exists():
@@ -236,7 +248,7 @@ class AdaptiveTransliterator:
         self._dict_hash = 0
         self._update_cache()
 
-    def _get_itrans(self, dev_str: str) -> str:
+    def _get_itrans(self, dev_str: str) -> str:      
         if dev_str not in self._reverse_cache:
             try:
                 self._reverse_cache[dev_str] = transliterate(dev_str, self.dst, self.src)
@@ -248,8 +260,6 @@ class AdaptiveTransliterator:
         current_hash = hash(frozenset(self.state.user_dict.items()))
         if current_hash != self._dict_hash:
             self._cached_dict_keys = sorted(self.state.user_dict.keys(), key=len, reverse=True)
-            
-            # Build a safe mapping and regex pattern for modifiers
             self._modifier_map = {}
             for k in self._cached_dict_keys:
                 is_modifier = (not k.isalpha()) or any(c.isupper() for c in k)
@@ -258,7 +268,6 @@ class AdaptiveTransliterator:
                     self._modifier_map[k] = self._get_itrans(dev_val)
                     
             if self._modifier_map:
-                # Compile a regex pattern to replace everything in a single, safe pass
                 sorted_map_keys = sorted(self._modifier_map.keys(), key=len, reverse=True)
                 self._modifier_pattern = re.compile('|'.join(map(re.escape, sorted_map_keys)))
             else:
@@ -268,7 +277,6 @@ class AdaptiveTransliterator:
 
     def translit_token(self, latin: str) -> str:
         if not latin: return ""
-        # 1. Check exact matches first
         if latin in self.state.user_dict: return self.state.user_dict[latin]
         if latin.lower() in self.state.user_dict: return self.state.user_dict[latin.lower()]
             
@@ -287,7 +295,6 @@ class AdaptiveTransliterator:
                 
         try: 
             res = transliterate(temp_latin, self.src, self.dst)
-            # Remove trailing halant for natural Hindi typing (schwa omission)
             if not force_halant and res.endswith('्'):
                 res = res[:-1]
             return res
@@ -300,9 +307,6 @@ class AdaptiveTransliterator:
         return " ".join([self.translit_token(w) for w in words])
 
 
-# ---------------------------------------------------------
-# NATIVE MEMORY EXTRACTOR (QTextFrame -> DOCX)
-# ---------------------------------------------------------
 def export_native_to_docx(qdoc: QtGui.QTextDocument, filepath: str):
     if not HAS_DOCX: raise Exception("python-docx is not installed.")
     
@@ -311,8 +315,12 @@ def export_native_to_docx(qdoc: QtGui.QTextDocument, filepath: str):
     style.paragraph_format.space_after = Pt(0)
     style.paragraph_format.space_before = Pt(0)
     style.paragraph_format.line_spacing = 1.0
+    
+    visited_frames = set()
 
     def process_paragraph(block, docx_parent=None, p=None):
+        QtWidgets.QApplication.processEvents() 
+
         if block.text().strip() == "" and not block.begin().fragment().charFormat().isImageFormat():
             if p is None and docx_parent is not None:
                 docx_parent.add_paragraph()
@@ -339,7 +347,7 @@ def export_native_to_docx(qdoc: QtGui.QTextDocument, filepath: str):
                     img = qdoc.resource(QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(img_name))
                     if img and not img.isNull():
                         fd, tmp = tempfile.mkstemp(suffix=".png")
-                        os.close(fd)
+                        os.close(fd) 
                         try:
                             img.save(tmp, "PNG")
                             w = img_fmt.width()
@@ -347,14 +355,12 @@ def export_native_to_docx(qdoc: QtGui.QTextDocument, filepath: str):
                                 run = p.add_run()
                                 run.add_picture(tmp, width=Inches(w / 96.0))
                         finally:
-                            # CRITICAL: Fixes memory leak if Word rendering fails
                             if os.path.exists(tmp): os.remove(tmp)
                 else:
                     txt = fragment.text().replace('\u2028', '\n')
                     if txt:
                         run = p.add_run(txt)
                         font = fmt.font()
-                        
                         run.font.bold = font.bold() or (fmt.fontWeight() >= QFont.Weight.Bold)
                         run.font.italic = font.italic() or fmt.fontItalic()
                         run.font.underline = font.underline() or fmt.fontUnderline()
@@ -385,18 +391,17 @@ def export_native_to_docx(qdoc: QtGui.QTextDocument, filepath: str):
             it += 1
 
     def process_table(table: QtGui.QTextTable, docx_parent):
+        if table.rows() == 0 or table.columns() == 0: return 
+        
         docx_table = docx_parent.add_table(rows=table.rows(), cols=table.columns())
         docx_table.style = 'Table Grid'
-        
         docx_table.autofit = False
         try:
             total_width = Inches(6.5)
             col_width = total_width / table.columns()
-            for col in docx_table.columns:
-                col.width = col_width
+            for col in docx_table.columns: col.width = col_width
             for row in docx_table.rows:
-                for cell in row.cells:
-                    cell.width = col_width
+                for cell in row.cells: cell.width = col_width
         except Exception: pass
         
         if WD_TABLE_ALIGNMENT is not None:
@@ -409,7 +414,6 @@ def export_native_to_docx(qdoc: QtGui.QTextDocument, filepath: str):
             for c in range(table.columns()):
                 cell = table.cellAt(r, c)
                 docx_cell = docx_table.cell(r, c)
-                
                 is_first_para = True
                 it = cell.begin()
                 while not it.atEnd():
@@ -427,8 +431,12 @@ def export_native_to_docx(qdoc: QtGui.QTextDocument, filepath: str):
                     it += 1
 
     def process_frame(frame, docx_parent):
+        if id(frame) in visited_frames: return 
+        visited_frames.add(id(frame))
+        
         it = frame.begin()
         while not it.atEnd():
+            QtWidgets.QApplication.processEvents() 
             child_frame = it.currentFrame()
             child_block = it.currentBlock()
             if child_frame:
@@ -442,9 +450,6 @@ def export_native_to_docx(qdoc: QtGui.QTextDocument, filepath: str):
     except PermissionError: raise PermissionError(f"Cannot save to {filepath}. Please close the document if it is open in another program.")
 
 
-# ---------------------------
-# ADVANCED TEMPLATE MANAGER
-# ---------------------------
 class TemplateManagerDialog(QtWidgets.QDialog):
     def __init__(self, state: AppState, editor_ref: QtWidgets.QTextEdit, parent=None):
         super().__init__(parent)
@@ -455,7 +460,6 @@ class TemplateManagerDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
         main_h = QtWidgets.QHBoxLayout()
-        
         left_v = QtWidgets.QVBoxLayout()
         self.list_widget = QtWidgets.QListWidget()
         self.list_widget.currentTextChanged.connect(self._on_select)
@@ -463,10 +467,9 @@ class TemplateManagerDialog(QtWidgets.QDialog):
         left_v.addWidget(self.list_widget)
         
         self.btn_insert = QtWidgets.QPushButton("Insert to Editor")
-        self.btn_insert.setStyleSheet("background-color: #4CAF50; color: white; font-weight:bold;")
+        self.btn_insert.setStyleSheet("background-color: #10b981; color: white; font-weight:bold;")
         self.btn_add_current = QtWidgets.QPushButton("Save Editor as Template")
         self.btn_delete = QtWidgets.QPushButton("Delete Selected")
-        
         left_v.addWidget(self.btn_insert)
         left_v.addWidget(self.btn_add_current)
         left_v.addWidget(self.btn_delete)
@@ -477,13 +480,11 @@ class TemplateManagerDialog(QtWidgets.QDialog):
         self.preview_editor = QtWidgets.QTextEdit()
         self.preview_editor.setAcceptRichText(True)
         right_v.addWidget(self.preview_editor)
-        
         self.btn_save_edit = QtWidgets.QPushButton("Update Template")
         right_v.addWidget(self.btn_save_edit)
         main_h.addLayout(right_v, 3)
 
         layout.addLayout(main_h)
-        
         bot_h = QtWidgets.QHBoxLayout()
         self.btn_export = QtWidgets.QPushButton("Export Group to File...")
         self.btn_import = QtWidgets.QPushButton("Import Group from File...")
@@ -501,7 +502,6 @@ class TemplateManagerDialog(QtWidgets.QDialog):
         self.btn_export.clicked.connect(self._export_group)
         self.btn_import.clicked.connect(self._import_group)
         self.btn_close.clicked.connect(self.accept)
-
         self._refresh_list()
 
     def _refresh_list(self):
@@ -572,9 +572,6 @@ class TemplateManagerDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.critical(self, "Error", str(e))
 
 
-# ---------------------------
-# Speech worker (QThread)
-# ---------------------------
 class SpeechWorker(QtCore.QThread):
     partial = QtCore.Signal(str)
     finished_text = QtCore.Signal(str)
@@ -586,8 +583,7 @@ class SpeechWorker(QtCore.QThread):
         self.lang = lang
         self._accum: List[str] = []
 
-    def stop(self):
-        self._stop = True
+    def stop(self): self._stop = True
 
     def run(self):
         if not HAS_SR:
@@ -600,7 +596,6 @@ class SpeechWorker(QtCore.QThread):
                 except Exception: pass
                 while not self._stop:
                     try: 
-                        # Use short timeouts so thread can exit cleanly
                         audio = rec.listen(source, timeout=0.5, phrase_time_limit=5)
                     except sr.WaitTimeoutError:
                         continue
@@ -617,9 +612,6 @@ class SpeechWorker(QtCore.QThread):
             self.finished_text.emit(" ".join(self._accum).strip())
 
 
-# ---------------------------
-# Suggestions Database Manager
-# ---------------------------
 class SuggestionsManagerDialog(QtWidgets.QDialog):
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
@@ -628,12 +620,12 @@ class SuggestionsManagerDialog(QtWidgets.QDialog):
         self.state = state
 
         layout = QtWidgets.QVBoxLayout(self)
-        
         self.lbl_dict = QtWidgets.QLabel(f"<b>Active Database:</b> {self.state.active_sugg_name} | <b>Total Words:</b> {len(self.state.suggestion_words)}")
-        self.lbl_dict.setStyleSheet("font-size: 14px; padding: 5px; color: #333; background: #e0e0e0;")
+        self.lbl_dict.setStyleSheet("font-size: 14px; padding: 5px;")
         layout.addWidget(self.lbl_dict)
 
         self.table = QtWidgets.QTableWidget(0, 1)
+        self.table.verticalHeader().setDefaultSectionSize(30)
         self.table.setHorizontalHeaderLabels(["Suggestion Word"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSortingEnabled(True)
@@ -656,8 +648,8 @@ class SuggestionsManagerDialog(QtWidgets.QDialog):
         layout.addLayout(btns_mid)
 
         btns_bot = QtWidgets.QHBoxLayout()
-        self.btn_scan = QtWidgets.QPushButton("Scan/Extract Words from File...")
-        self.btn_scan.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        self.btn_scan = QtWidgets.QPushButton("Scan/Extract Words from File(s)...")
+        self.btn_scan.setStyleSheet("background-color: #10b981; color: white; font-weight: bold;")
         self.btn_close = QtWidgets.QPushButton("Close")
         btns_bot.addWidget(self.btn_scan)
         btns_bot.addStretch()
@@ -673,30 +665,27 @@ class SuggestionsManagerDialog(QtWidgets.QDialog):
         self.btn_save_man.clicked.connect(lambda: self.save_to_file(None))
         self.btn_scan.clicked.connect(self.scan_file)
         self.btn_close.clicked.connect(self.accept)
-
         self.reload_table()
 
     def reload_table(self, data_set=None):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         source = data_set if data_set is not None else self.state.suggestion_words
-        
         sample = list(source)[:2000]
         for w in sample:
             r = self.table.rowCount()
             self.table.insertRow(r)
             self.table.setItem(r, 0, QtWidgets.QTableWidgetItem(w))
-            
         self.table.setSortingEnabled(True)
         self.lbl_dict.setText(f"<b>Active Database:</b> {self.state.active_sugg_name} | <b>Total Words:</b> {len(source)}")
 
     def add_row(self):
-        self.table.setSortingEnabled(False)
-        r = self.table.rowCount()
-        self.table.insertRow(r)
-        self.table.setItem(r, 0, QtWidgets.QTableWidgetItem(""))
-        self.table.editItem(self.table.item(r, 0))
-        self.table.setSortingEnabled(True)
+            self.table.setSortingEnabled(False)
+            self.table.insertRow(0) 
+            self.table.setItem(0, 0, QtWidgets.QTableWidgetItem(""))
+            self.table.scrollToItem(self.table.item(0, 0))
+            self.table.editItem(self.table.item(0, 0))
+            self.table.setSortingEnabled(True)
 
     def remove_selected(self):
         rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
@@ -748,54 +737,48 @@ class SuggestionsManagerDialog(QtWidgets.QDialog):
             except Exception as e: QtWidgets.QMessageBox.critical(self, "Error", str(e))
 
     def scan_file(self):
-        filters = "Documents (*.txt *.csv *.xlsx *.ods *.docx);;All Files (*.*)"
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Scan Words from File", "", filters)
-        if not path: return
+        filters = "Documents (*.txt *.csv *.xlsx *.ods *.docx *.pdf);;All Files (*.*)"
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "Scan Words from Files", "", filters)
+        if not paths: return
         
-        ext = path.lower().split('.')[-1]
         extracted_words: Set[str] = set()
         
         try:
-            if ext == "txt":
-                with open(path, "r", encoding="utf-8") as f:
-                    extracted_words = set(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', f.read()))
-            elif ext == "docx" and HAS_DOCX:
-                doc = docx.Document(path)
-                full_text = " ".join([p.text for p in doc.paragraphs])
-                extracted_words = set(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', full_text))
-            elif ext in ["csv", "xlsx", "ods"]:
-                if not HAS_PANDAS:
-                    QtWidgets.QMessageBox.warning(self, "Pandas Required", "Please install pandas and openpyxl to scan spreadsheets.")
-                    return
-                if ext == "xlsx":
-                    df = pd.read_excel(path, engine="openpyxl")
-                elif ext == "ods":
-                    df = pd.read_excel(path, engine="odf")
-                else:
-                    df = pd.read_csv(path)
-                    
-                df = df.fillna("") 
-                full_text = " ".join([str(val) for val in df.values.flatten() if str(val).strip()])
-                extracted_words = set(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', full_text))
-            else:
-                QtWidgets.QMessageBox.warning(self, "Unsupported", "File format not supported for scanning.")
-                return
+            for path in paths:
+                ext = path.lower().split('.')[-1]
+                if ext == "txt":
+                    with open(path, "r", encoding="utf-8") as f: extracted_words.update(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', f.read()))
+                elif ext == "docx" and HAS_DOCX:
+                    doc = docx.Document(path)
+                    full_text = " ".join([p.text for p in doc.paragraphs])
+                    extracted_words.update(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', full_text))
+                elif ext == "pdf" and HAS_PDF:
+                    with open(path, "rb") as f:
+                        reader = PyPDF2.PdfReader(f)
+                        full_text = " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
+                        extracted_words.update(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', full_text))
+                elif ext in ["csv", "xlsx", "ods"]:
+                    if not HAS_PANDAS:
+                        QtWidgets.QMessageBox.warning(self, "Pandas Required", "Please install pandas and openpyxl to scan spreadsheets.")
+                        continue
+                    if ext == "xlsx": df = pd.read_excel(path, engine="openpyxl")
+                    elif ext == "ods": df = pd.read_excel(path, engine="odf")
+                    else: df = pd.read_csv(path)
+                    df = df.fillna("") 
+                    full_text = " ".join([str(val) for val in df.values.flatten() if str(val).strip()])
+                    extracted_words.update(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', full_text))
 
             added = 0
             for w in extracted_words:
                 if len(w) > 1 and w not in self.state.suggestion_words:
                     self.state.suggestion_words.add(w)
                     added += 1
-                    
             self.reload_table()
-            QtWidgets.QMessageBox.information(self, "Scan Complete", f"Extracted and added {added} NEW unique words.")
+            QtWidgets.QMessageBox.information(self, "Scan Complete", f"Extracted and added {added} NEW unique words from {len(paths)} file(s).")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Scan Error", f"Failed to extract words: {str(e)}")
 
 
-# ---------------------------
-# Dictionary UI (Corrections)
-# ---------------------------
 class CorrectionsDialog(QtWidgets.QDialog):
     def __init__(self, state: AppState, editor_ref: Optional[QtWidgets.QTextEdit] = None, parent=None):
         super().__init__(parent)
@@ -805,9 +788,8 @@ class CorrectionsDialog(QtWidgets.QDialog):
         self.editor_ref = editor_ref
 
         layout = QtWidgets.QVBoxLayout(self)
-        
         self.lbl_dict = QtWidgets.QLabel(f"<b>Active Dictionary:</b> {self.state.active_dict_name}")
-        self.lbl_dict.setStyleSheet("font-size: 14px; padding: 5px; color: #333; background: #e0e0e0;")
+        self.lbl_dict.setStyleSheet("font-size: 14px; padding: 5px;")
         layout.addWidget(self.lbl_dict)
 
         self.table = QtWidgets.QTableWidget(0, 2)
@@ -833,8 +815,8 @@ class CorrectionsDialog(QtWidgets.QDialog):
         layout.addLayout(btns_mid)
 
         btns_bot = QtWidgets.QHBoxLayout()
-        self.btn_scan = QtWidgets.QPushButton("Scan/Extract Words from File...")
-        self.btn_scan.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
+        self.btn_scan = QtWidgets.QPushButton("Scan/Extract Words from File(s)...")
+        self.btn_scan.setStyleSheet("background-color: #10b981; color: white; font-weight: bold;")
         self.btn_apply_sel = QtWidgets.QPushButton("Apply mapping to selection")
         self.btn_close = QtWidgets.QPushButton("Close")
         btns_bot.addWidget(self.btn_scan)
@@ -853,7 +835,6 @@ class CorrectionsDialog(QtWidgets.QDialog):
         self.btn_scan.clicked.connect(self.scan_file)
         self.btn_apply_sel.clicked.connect(self.apply_mapping_to_selection)
         self.btn_close.clicked.connect(self.accept)
-
         self.reload_table()
 
     def reload_table(self, data_dict=None):
@@ -869,11 +850,11 @@ class CorrectionsDialog(QtWidgets.QDialog):
 
     def add_row(self):
         self.table.setSortingEnabled(False)
-        r = self.table.rowCount()
-        self.table.insertRow(r)
-        self.table.setItem(r, 0, QtWidgets.QTableWidgetItem(""))
-        self.table.setItem(r, 1, QtWidgets.QTableWidgetItem(""))
-        self.table.editItem(self.table.item(r, 0))
+        self.table.insertRow(0) 
+        self.table.setItem(0, 0, QtWidgets.QTableWidgetItem(""))
+        self.table.setItem(0, 1, QtWidgets.QTableWidgetItem(""))
+        self.table.scrollToItem(self.table.item(0, 0))
+        self.table.editItem(self.table.item(0, 0))
         self.table.setSortingEnabled(True)
 
     def remove_selected(self):
@@ -932,44 +913,40 @@ class CorrectionsDialog(QtWidgets.QDialog):
             except Exception as e: QtWidgets.QMessageBox.critical(self, "Error", str(e))
 
     def scan_file(self):
-        filters = "Documents (*.txt *.csv *.xlsx *.ods *.docx);;All Files (*.*)"
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Scan Words from File", "", filters)
-        if not path: return
+        filters = "Documents (*.txt *.csv *.xlsx *.ods *.docx *.pdf);;All Files (*.*)"
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "Scan Words from Files", "", filters)
+        if not paths: return
         
-        ext = path.lower().split('.')[-1]
         extracted_words: Set[str] = set()
-        
         try:
-            if ext == "txt":
-                with open(path, "r", encoding="utf-8") as f:
-                    extracted_words = set(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', f.read()))
-            elif ext == "docx" and HAS_DOCX:
-                doc = docx.Document(path)
-                full_text = " ".join([p.text for p in doc.paragraphs])
-                extracted_words = set(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', full_text))
-            elif ext in ["csv", "xlsx", "ods"]:
-                if not HAS_PANDAS:
-                    QtWidgets.QMessageBox.warning(self, "Pandas Required", "Please install pandas and openpyxl to scan spreadsheets.")
-                    return
-                if ext == "xlsx":
-                    df = pd.read_excel(path, engine="openpyxl")
-                elif ext == "ods":
-                    df = pd.read_excel(path, engine="odf")
-                else:
-                    df = pd.read_csv(path)
-                    
-                df = df.fillna("") 
-                full_text = " ".join([str(val) for val in df.values.flatten() if str(val).strip()])
-                extracted_words = set(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', full_text))
-            else:
-                QtWidgets.QMessageBox.warning(self, "Unsupported", "File format not supported for scanning.")
-                return
+            for path in paths:
+                ext = path.lower().split('.')[-1]
+                if ext == "txt":
+                    with open(path, "r", encoding="utf-8") as f: extracted_words.update(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', f.read()))
+                elif ext == "docx" and HAS_DOCX:
+                    doc = docx.Document(path)
+                    full_text = " ".join([p.text for p in doc.paragraphs])
+                    extracted_words.update(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', full_text))
+                elif ext == "pdf" and HAS_PDF:
+                    with open(path, "rb") as f:
+                        reader = PyPDF2.PdfReader(f)
+                        full_text = " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
+                        extracted_words.update(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', full_text))
+                elif ext in ["csv", "xlsx", "ods"]:
+                    if not HAS_PANDAS:
+                        QtWidgets.QMessageBox.warning(self, "Pandas Required", "Please install pandas and openpyxl to scan spreadsheets.")
+                        continue
+                    if ext == "xlsx": df = pd.read_excel(path, engine="openpyxl")
+                    elif ext == "ods": df = pd.read_excel(path, engine="odf")
+                    else: df = pd.read_csv(path)
+                    df = df.fillna("") 
+                    full_text = " ".join([str(val) for val in df.values.flatten() if str(val).strip()])
+                    extracted_words.update(re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', full_text))
 
             existing_words = set()
             for r in range(self.table.rowCount()):
                 item = self.table.item(r, 0)
-                if item and item.text().strip():
-                    existing_words.add(item.text().strip().lower())
+                if item and item.text().strip(): existing_words.add(item.text().strip().lower())
 
             added = 0
             self.table.setSortingEnabled(False)
@@ -978,7 +955,6 @@ class CorrectionsDialog(QtWidgets.QDialog):
                 if w_lower not in existing_words and not w_lower.isnumeric():
                     r = self.table.rowCount()
                     self.table.insertRow(r)
-                    
                     is_devanagari = bool(re.search(r"[\u0900-\u097F]", w_lower))
                     if is_devanagari:
                         self.table.setItem(r, 0, QtWidgets.QTableWidgetItem(""))
@@ -986,12 +962,10 @@ class CorrectionsDialog(QtWidgets.QDialog):
                     else:
                         self.table.setItem(r, 0, QtWidgets.QTableWidgetItem(w_lower))
                         self.table.setItem(r, 1, QtWidgets.QTableWidgetItem(""))
-                        
                     existing_words.add(w_lower)
                     added += 1
-                    
             self.table.setSortingEnabled(True)
-            QtWidgets.QMessageBox.information(self, "Scan Complete", f"Extracted and added {added} NEW unique words.")
+            QtWidgets.QMessageBox.information(self, "Scan Complete", f"Extracted and added {added} NEW unique words from {len(paths)} file(s).")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Scan Error", f"Failed to extract words: {str(e)}")
 
@@ -1001,11 +975,9 @@ class CorrectionsDialog(QtWidgets.QDialog):
         if not cur.hasSelection(): cur.select(QtGui.QTextCursor.SelectionType.WordUnderCursor)
         sel = cur.selectedText()
         if not sel: return
-        
         mappings = [(self.table.item(r, 0).text().strip(), self.table.item(r, 1).text()) 
                     for r in range(self.table.rowCount()) if self.table.item(r, 0) and self.table.item(r, 1)]
         if not mappings: return
-        
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Choose mapping")
         dlg.resize(480, 360)
@@ -1027,9 +999,6 @@ class CorrectionsDialog(QtWidgets.QDialog):
             dlg.accept()
 
 
-# ---------------------------
-# Find & Replace UI
-# ---------------------------
 class FindReplaceDialog(QtWidgets.QDialog):
     def __init__(self, editor: QtWidgets.QTextEdit, parent=None):
         super().__init__(parent)
@@ -1107,14 +1076,13 @@ class FindReplaceDialog(QtWidgets.QDialog):
         QtWidgets.QMessageBox.information(self, "Replace All", f"Replaced {count} occurrence(s).")
 
 
-# ---------------------------
-# Core Editor
-# ---------------------------
 class HindiEditor(QtWidgets.QTextEdit):
     countsChanged = QtCore.Signal(int, int)
     cursorPositionChangedDetailed = QtCore.Signal(int, int)
     contextActionTriggered = QtCore.Signal(str) 
-    prefixChanged = QtCore.Signal(str)
+    englishModeToggled = QtCore.Signal(bool)
+    
+    suggestionsReady = QtCore.Signal(list)
     navigateSuggestion = QtCore.Signal(int)
     insertSuggestionTrigger = QtCore.Signal()
 
@@ -1126,33 +1094,168 @@ class HindiEditor(QtWidgets.QTextEdit):
         f = QtGui.QFont(self.state.font_family, self.state.font_size)
         self.setFont(f)
         self.document().setDefaultFont(f)
-        self.setPlaceholderText("Type phonetically (Latin) — Devanagari will appear")
+        self.setPlaceholderText("Type phonetically (Latin)... \nDevanagari will appear.")
 
         self._composing_latin = ""
         self._composing_start_pos: Optional[int] = None
         self._composing_display_len = 0
         self._ignore_cursor_move = False
-        self._has_suggestions = False
+        self._english_mode = False
+        self._has_dock_suggestions = False
+        
+        self.sugg_popup = QtWidgets.QListWidget()
+        self.sugg_popup.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.sugg_popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground) 
+        self.sugg_popup.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.sugg_popup.setObjectName("suggPopup")
+        self.sugg_popup.setFixedWidth(150) 
+        self.sugg_popup.itemClicked.connect(self._insert_selected_suggestion)
         
         self.textChanged.connect(self._on_text_changed)
         self.cursorPositionChanged.connect(self._on_cursor_moved)
 
-    def set_has_suggestions(self, val: bool):
-        self._has_suggestions = val
+    def focusOutEvent(self, e):
+        self.sugg_popup.hide()
+        super().focusOutEvent(e)
+
+    def set_has_dock_suggestions(self, val: bool):
+        self._has_dock_suggestions = val
+
+    def _process_suggestions(self, prefix: str):
+        if not prefix or self._english_mode:
+            self.sugg_popup.hide()
+            self.suggestionsReady.emit([])
+            return
+            
+        prefix_lower = prefix.lower()
+        
+        # KEY ALGORITHM FIX: Ignore trailing halant while searching.
+        # This ensures typing "क्" (k) suggests BOTH "क्या" (kya) AND "कमल" (kamal)
+        search_prefix = prefix_lower.rstrip('्') if prefix_lower.endswith('्') else prefix_lower
+        
+        all_words = list(self.state.suggestion_words)
+        
+        # 1. Find matches
+        matches = [w for w in all_words if w.lower().startswith(search_prefix)]
+        
+        # 2. SMART SORTING: 
+        # - Exact matches at the very top.
+        # - Shorter words next (reduces keystrokes for common small words).
+        # - Alphabetical order as a fallback.
+        matches.sort(key=lambda w: (
+            w.lower() != prefix_lower,  # Exact matches (0) beat non-exact (1)
+            w.lower() != search_prefix, # Prefix exact (0) beat others (1)
+            len(w),                     # Short words beat long words
+            w.lower()                   # Alphabetical tie-breaker
+        ))
+        
+        # Super-fast optimized fuzzy match fallback
+        if not matches and len(prefix_lower) >= 3:
+            candidates = [w for w in all_words if abs(len(w) - len(prefix_lower)) <= 2]
+            fuzzies = difflib.get_close_matches(prefix_lower, candidates, n=5, cutoff=0.6)
+            for f in fuzzies:
+                matched_orig = next((w for w in all_words if w.lower() == f.lower()), f)
+                if matched_orig not in matches:
+                    matches.append(matched_orig)
+
+        if self.state.suggestion_mode in ["Inline", "Both"] and matches:
+            self.sugg_popup.clear()
+            
+            # Fetch up to 11 to give shortcuts 1-9 and 0
+            for i, word in enumerate(matches[:11]):
+                item = QtWidgets.QListWidgetItem()
+                if i == 0:
+                    display = word
+                elif i < 10:
+                    display = f"[{i}] {word}"
+                else:
+                    display = f"[0] {word}"
+                item.setText(display)
+                item.setData(Qt.ItemDataRole.UserRole, word)
+                self.sugg_popup.addItem(item)
+                
+            self.sugg_popup.setCurrentRow(0)
+            
+            rect = self.cursorRect()
+            pt = self.viewport().mapToGlobal(rect.bottomLeft())
+            pt.setY(pt.y() + 5)
+            
+            item_h = self.sugg_popup.sizeHintForRow(0) or 25
+            total_h = min(11, len(matches)) * item_h + 10
+            self.sugg_popup.setFixedHeight(total_h)
+            
+            self.sugg_popup.move(pt)
+            self.sugg_popup.show()
+        else:
+            self.sugg_popup.hide()
+
+        if self.state.suggestion_mode in ["Dock", "Both"]:
+            self.suggestionsReady.emit(matches[:100])
+        else:
+            self.suggestionsReady.emit([])
 
     def keyPressEvent(self, ev: QtGui.QKeyEvent):
         key, mods = ev.key(), ev.modifiers()
         
-        if key == Qt.Key.Key_Tab and self._has_suggestions:
-            self.insertSuggestionTrigger.emit()
+        if key == Qt.Key.Key_Space and (mods & Qt.KeyboardModifier.ControlModifier):
+            self._english_mode = not self._english_mode
+            if self._composing_latin: 
+                self._commit_composing()
+            self.sugg_popup.hide()
+            self.englishModeToggled.emit(self._english_mode)
+            QtWidgets.QToolTip.showText(self.mapToGlobal(self.cursorRect().bottomRight()),
+                                        "English (Hinglish) Mode ON" if self._english_mode else "Hindi Translit Mode ON",
+                                        self)
             return
 
-        if (key == Qt.Key.Key_Up or key == Qt.Key.Key_Down) and (mods & Qt.KeyboardModifier.ControlModifier):
-            step = -1 if key == Qt.Key.Key_Up else 1
-            self.navigateSuggestion.emit(step)
-            return
-            
+        if self.sugg_popup.isVisible():
+            if key == Qt.Key.Key_Up:
+                r = self.sugg_popup.currentRow()
+                if r > 0: self.sugg_popup.setCurrentRow(r - 1)
+                return
+            elif key == Qt.Key.Key_Down:
+                r = self.sugg_popup.currentRow()
+                if r < self.sugg_popup.count() - 1: self.sugg_popup.setCurrentRow(r + 1)
+                return
+            elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab):
+                item = self.sugg_popup.currentItem()
+                if item:
+                    self._insert_suggestion_text(item.data(Qt.ItemDataRole.UserRole))
+                    if key == Qt.Key.Key_Tab:
+                        self.insertPlainText(" ") 
+                return
+            elif key == Qt.Key.Key_Space:
+                # Commit composing & hide, proceed to add natural space
+                if self._composing_latin: self._commit_composing()
+                self.sugg_popup.hide()
+            elif key == Qt.Key.Key_Escape:
+                self.sugg_popup.hide()
+                return
+
+        # Handle numbered shortcuts (Ctrl+1, Ctrl+2, etc.)
         if mods & Qt.KeyboardModifier.ControlModifier: 
+            if self.sugg_popup.isVisible() and Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+                num = key - Qt.Key.Key_0
+                idx = 10 if num == 0 else num
+                if idx < self.sugg_popup.count():
+                    item = self.sugg_popup.item(idx)
+                    if item:
+                        self._insert_suggestion_text(item.data(Qt.ItemDataRole.UserRole))
+                        self.insertPlainText(" ")
+                return
+            return super().keyPressEvent(ev)
+
+        if self.state.suggestion_mode in ["Dock", "Both"] and self._has_dock_suggestions and not self.sugg_popup.isVisible():
+            if key == Qt.Key.Key_Tab:
+                self.insertSuggestionTrigger.emit()
+                return
+            if (key == Qt.Key.Key_Up or key == Qt.Key.Key_Down) and (mods & Qt.KeyboardModifier.ControlModifier):
+                step = -1 if key == Qt.Key.Key_Up else 1
+                self.navigateSuggestion.emit(step)
+                return
+            
+        if self._english_mode:
+            self.sugg_popup.hide()
             return super().keyPressEvent(ev)
 
         if key in {Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Home, Qt.Key.Key_End}:
@@ -1164,10 +1267,11 @@ class HindiEditor(QtWidgets.QTextEdit):
                 self._composing_latin = self._composing_latin[:-1]
                 if self._composing_latin: 
                     self._update_composing()
-                    self.prefixChanged.emit(self.translit.translit_token(self._composing_latin) if self.state.transliteration_enabled else self._composing_latin)
+                    self._process_suggestions(self.translit.translit_token(self._composing_latin) if self.state.transliteration_enabled else self._composing_latin)
                 else: 
                     self._remove_composing()
-                    self.prefixChanged.emit("")
+                    self.sugg_popup.hide()
+                    self.suggestionsReady.emit([])
                 return
             return super().keyPressEvent(ev)
 
@@ -1197,14 +1301,14 @@ class HindiEditor(QtWidgets.QTextEdit):
                 self.setTextCursor(cur)
                 self._ignore_cursor_move = False
                 
-                self.prefixChanged.emit(translit_text)
+                self._process_suggestions(translit_text)
                 return
             else:
                 self._composing_latin += txt
                 translit_text = self.translit.translit_token(self._composing_latin) if self.state.transliteration_enabled else self._composing_latin
                 self._update_composing_with_text(translit_text)
                 
-                self.prefixChanged.emit(translit_text)
+                self._process_suggestions(translit_text)
                 return
 
         if self._composing_latin: self._commit_composing()
@@ -1215,35 +1319,43 @@ class HindiEditor(QtWidgets.QTextEdit):
     def _on_cursor_moved(self):
         if self._ignore_cursor_move: return
         if self._composing_latin: self._commit_composing()
-        self._emit_prefix()
+        
+        if not self._english_mode:
+            cur = self.textCursor()
+            cur.movePosition(QtGui.QTextCursor.MoveOperation.StartOfWord, QtGui.QTextCursor.MoveMode.KeepAnchor)
+            self._process_suggestions(cur.selectedText().strip())
         
         cur = self.textCursor()
         line = cur.blockNumber() + 1
         col = cur.positionInBlock()
         self.cursorPositionChangedDetailed.emit(line, col)
 
-    def _emit_prefix(self):
-        if self._ignore_cursor_move: return
-        if self._composing_latin:
-            prefix = self.translit.translit_token(self._composing_latin) if self.state.transliteration_enabled else self._composing_latin
-            self.prefixChanged.emit(prefix)
-        else:
-            cur = self.textCursor()
-            cur.movePosition(QtGui.QTextCursor.MoveOperation.StartOfWord, QtGui.QTextCursor.MoveMode.KeepAnchor)
-            self.prefixChanged.emit(cur.selectedText().strip())
-
-    def insert_suggestion(self, word: str):
+    def _insert_suggestion_text(self, word: str):
         cur = self.textCursor()
-        if self._composing_latin: self._remove_composing()
+        self._ignore_cursor_move = True
+        
+        if self._composing_latin: 
+            self._remove_composing()
         else:
             cur.movePosition(QtGui.QTextCursor.MoveOperation.StartOfWord, QtGui.QTextCursor.MoveMode.KeepAnchor)
             cur.removeSelectedText()
             
-        cur.insertText(word + " ")
+        cur.insertText(word)
         self.setTextCursor(cur)
         self.setFocus()
-        self._has_suggestions = False
-        self.prefixChanged.emit("")
+        self.sugg_popup.hide()
+        self.suggestionsReady.emit([])
+        self._composing_latin = ""
+        self._ignore_cursor_move = False
+
+    def insert_suggestion_from_dock(self, word: str):
+        self._insert_suggestion_text(word)
+        self.insertPlainText(" ")
+
+    def _insert_selected_suggestion(self, item):
+        if item:
+            self._insert_suggestion_text(item.data(Qt.ItemDataRole.UserRole))
+            self.insertPlainText(" ")
 
     def _update_composing_with_text(self, translit_text: str):
         if self._composing_start_pos is None: return
@@ -1288,6 +1400,10 @@ class HindiEditor(QtWidgets.QTextEdit):
         if re.search(r"[\u0900-\u097F]", text):
             if self._composing_latin: self._commit_composing()
             return super().paste()
+            
+        if self._english_mode:
+            return super().paste()
+            
         parts = re.split(r"(\s+)", text)
         for p in parts:
             if p.strip() == "": super().insertPlainText(p)
@@ -1301,8 +1417,31 @@ class HindiEditor(QtWidgets.QTextEdit):
         w = len([w for w in re.split(r"\s+", txt.strip()) if w]) if txt.strip() else 0
         self.countsChanged.emit(w, len(txt))
 
+
     def contextMenuEvent(self, e):
         menu = self.createStandardContextMenu()
+        
+        # 1. Strip the transparency it inherits from the canvas
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        
+        # 2. Fetch the current theme from the MainWindow
+        main_window = self.window()
+        is_dark = getattr(main_window, 'dark_mode_enabled', False)
+        
+        # 3. Apply strict solid backgrounds based on the theme
+        if is_dark:
+            menu.setStyleSheet("""
+                QMenu { background-color: #1f2937; color: #f9fafb; border: 1px solid #4b5563; padding: 4px; }
+                QMenu::item:selected { background-color: #059669; }
+                QMenu::separator { background-color: #4b5563; height: 1px; margin: 4px 0px; }
+            """)
+        else:
+            menu.setStyleSheet("""
+                QMenu { background-color: #ffffff; color: #111827; border: 1px solid #d1d5db; padding: 4px; }
+                QMenu::item:selected { background-color: #059669; color: white; }
+                QMenu::separator { background-color: #e5e7eb; height: 1px; margin: 4px 0px; }
+            """)
+
         menu.addSeparator()
         
         cur = self.textCursor()
@@ -1348,9 +1487,6 @@ class HindiEditor(QtWidgets.QTextEdit):
             self.textChanged.emit()
 
 
-# ---------------------------
-# Main Window UI & Logic
-# ---------------------------
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1361,28 +1497,69 @@ class MainWindow(QtWidgets.QMainWindow):
         self.state.load()
         
         self.current_filepath: Optional[str] = None
-        self.dark_mode_enabled = False
-        self.print_layout_enabled = False
+        
+        # --- NEW: App Settings & Persistent Theme ---
+        self.settings = QtCore.QSettings("TranslitStudio", "TranslitDocMaker")
+        # Load the saved state (defaults to False/Light Mode if not found)The default is now True (Dark Mode) for new users
+        self.dark_mode_enabled = self.settings.value("dark_mode", True, type=bool)
         
         self.printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         
+        
         self.autosave_enabled: bool = False
         self.autosave_timer = QTimer(self)
-        self.autosave_timer.setInterval(30000) 
+        self.autosave_timer.setInterval(60000)
         self.autosave_timer.timeout.connect(self._perform_autosave)
         self.is_dirty = False
+
+        # Productivity Timers
+        self.app_seconds = 0
+        self.doc_seconds = 0
+        self.doc_timer_active = False
+        self.global_timer = QTimer(self)
+        self.global_timer.timeout.connect(self._on_timer_tick)
+        self.global_timer.start(1000)
 
         try: self.translit = AdaptiveTransliterator(self.state)
         except RuntimeError as e:
             QtWidgets.QMessageBox.critical(None, "Missing dependency", str(e))
             raise SystemExit(1)
 
+        self.workspace_scroll = QtWidgets.QScrollArea()
+        self.workspace_scroll.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self.workspace_scroll.setWidgetResizable(True)
+        
+        self.canvas_container = QtWidgets.QWidget()
+        self.canvas_container.setStyleSheet("background-color: transparent;")
+        self.canvas_layout = QtWidgets.QVBoxLayout(self.canvas_container)
+        self.canvas_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self.canvas_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.page_frame = QtWidgets.QFrame()
+        self.page_frame.setObjectName("page_frame")
+        self.page_layout = QtWidgets.QVBoxLayout(self.page_frame)
+        self.page_layout.setContentsMargins(0, 0, 0, 0)
+        self.page_layout.setSpacing(0)
+
         self.editor = HindiEditor(self.translit, self.state, self)
-        self.setCentralWidget(self.editor)
+        
+        self.page_layout.addWidget(self.editor)
+        self.canvas_layout.addWidget(self.page_frame)
+        
+        self.workspace_scroll.setWidget(self.canvas_container)
+        self.setCentralWidget(self.workspace_scroll)
+        
+        self.workspace_scroll.verticalScrollBar().valueChanged.connect(lambda _: self.editor.sugg_popup.hide())
+        self.workspace_scroll.horizontalScrollBar().valueChanged.connect(lambda _: self.editor.sugg_popup.hide())
+
+
+        self.editor.cursorPositionChanged.connect(self._ensure_cursor_visible)
+
         self.editor.countsChanged.connect(self._update_counts)
         self.editor.cursorPositionChangedDetailed.connect(self._update_cursor_position_label)
         self.editor.contextActionTriggered.connect(self._handle_context_action)
         self.editor.textChanged.connect(self._mark_dirty)
+        self.editor.englishModeToggled.connect(self._update_translit_badge)
 
         self.finddlg = FindReplaceDialog(self.editor, self)
         
@@ -1394,18 +1571,41 @@ class MainWindow(QtWidgets.QMainWindow):
         self._setup_actions() 
         self._build_toolbars()
         self._build_menus()
-        
         self._build_sidebar()
         self._build_suggestions_sidebar()
         
-        self.editor.prefixChanged.connect(self._update_suggestions)
-        self.editor.navigateSuggestion.connect(self._navigate_suggestion_list)
-        self.editor.insertSuggestionTrigger.connect(self._insert_selected_suggestion)
+        self.editor.suggestionsReady.connect(self._populate_dock_suggestions)
+        self.editor.navigateSuggestion.connect(self._navigate_dock_suggestion_list)
+        self.editor.insertSuggestionTrigger.connect(self._insert_selected_dock_suggestion)
 
         self._build_statusbar()
+        self._apply_theme()
         self._update_translit_badge()
+        self._update_view_mode()
         
-        QTimer.singleShot(100, lambda: self._new_file(prompt_autosave=True))
+        # Initialize app silently without triggering useless startup dialogs
+        QTimer.singleShot(0, lambda: self._new_file(prompt_autosave=False, is_startup=True))
+
+    def _on_timer_tick(self):
+        self.app_seconds += 1
+        if self.doc_timer_active:
+            self.doc_seconds += 1
+
+        app_m, app_s = divmod(self.app_seconds, 60)
+        app_h, app_m = divmod(app_m, 60)
+        self.lbl_app_time.setText(f"App: {app_h:02d}:{app_m:02d}:{app_s:02d}")
+
+        doc_m, doc_s = divmod(self.doc_seconds, 60)
+        doc_h, doc_m = divmod(doc_m, 60)
+        self.lbl_doc_time.setText(f"Doc: {doc_h:02d}:{doc_m:02d}:{doc_s:02d}")
+
+    def resizeEvent(self, event):
+        self.editor.sugg_popup.hide()
+        super().resizeEvent(event)
+
+    def moveEvent(self, event):
+        self.editor.sugg_popup.hide()
+        super().moveEvent(event)
 
     def eventFilter(self, watched, event):
         try:
@@ -1434,10 +1634,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _start_sr_listening(self):
         if not HAS_SR:
-            QtWidgets.QMessageBox.information(self, "Speech missing", "Install SpeechRecognition and PyAudio: pip install SpeechRecognition pyaudio")
+            QtWidgets.QMessageBox.information(self, "Speech missing", "Install SpeechRecognition and PyAudio")
             return
-        if self.sr_worker and self.sr_worker.isRunning():
-            return
+        if self.sr_worker and self.sr_worker.isRunning(): return
         self.sr_worker = SpeechWorker(lang="hi-IN", parent=self)
         self.sr_worker.partial.connect(self._update_speech_label_partial)
         self.sr_worker.finished_text.connect(self._sr_finished)
@@ -1475,13 +1674,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _mark_dirty(self):
         self.is_dirty = True
+        if not self.doc_timer_active:
+            self.doc_timer_active = True
 
     def _perform_autosave(self):
         if self.autosave_enabled and self.current_filepath and self.is_dirty:
             try:
                 ext = self.current_filepath.lower().split('.')[-1]
                 if ext == "docx" and HAS_DOCX: 
-                    self._save_docx_silent(self.current_filepath)
+                    export_native_to_docx(self.editor.document(), self.current_filepath)
                 elif ext in ["html", "htm"]:
                     self._save_html_silent(self.current_filepath)
                 else:
@@ -1520,11 +1721,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self.act_dict = QtGui.QAction("Correction Dictionary", self, shortcut="Ctrl+Shift+C", triggered=self._open_corrections)
         self.act_sugg_manager = QtGui.QAction("Suggestion Database Manager...", self, triggered=self._open_suggestion_trainer)
         self.act_translit = QtGui.QAction("Toggle Translit", self, shortcut="Ctrl+T", triggered=self._toggle_transliteration)
-        self.act_theme = QtGui.QAction("Toggle Dark Mode", self, shortcut="Ctrl+D", triggered=self._toggle_theme)
-        self.act_print_layout = QtGui.QAction("Print Layout View", self, checkable=True, triggered=self._toggle_print_layout)
+        self.act_theme = QtGui.QAction("Theme", self, shortcut="Ctrl+D", triggered=self._toggle_theme)
         
-        self.act_zoom_in = QtGui.QAction("Zoom In", self, shortcut="Ctrl++", triggered=lambda: self.editor.zoomIn(1))
-        self.act_zoom_out = QtGui.QAction("Zoom Out", self, shortcut="Ctrl+-", triggered=lambda: self.editor.zoomOut(1))
+        self.view_grp = QtGui.QActionGroup(self)
+        self.act_view_web = QtGui.QAction("Web Layout (Default)", self, checkable=True)
+        self.act_view_port = QtGui.QAction("Canvas Layout (Portrait)", self, checkable=True)
+        self.act_view_land = QtGui.QAction("Canvas Layout (Landscape)", self, checkable=True)
+        for a in (self.act_view_web, self.act_view_port, self.act_view_land):
+            self.view_grp.addAction(a)
+            a.triggered.connect(self._change_view_mode)
+            
+        if self.state.view_mode == "Portrait": self.act_view_port.setChecked(True)
+        elif self.state.view_mode == "Landscape": self.act_view_land.setChecked(True)
+        else: self.act_view_web.setChecked(True)
+
+        self.sugg_grp = QtGui.QActionGroup(self)
+        self.act_sugg_dock = QtGui.QAction("Dock Sidebar Only", self, checkable=True)
+        self.act_sugg_inline = QtGui.QAction("Inline Popup Only", self, checkable=True)
+        self.act_sugg_both = QtGui.QAction("Both Dock and Inline", self, checkable=True)
+        for a in (self.act_sugg_dock, self.act_sugg_inline, self.act_sugg_both):
+            self.sugg_grp.addAction(a)
+            a.triggered.connect(self._change_suggestion_mode)
+            
+        if self.state.suggestion_mode == "Dock": self.act_sugg_dock.setChecked(True)
+        elif self.state.suggestion_mode == "Inline": self.act_sugg_inline.setChecked(True)
+        else: self.act_sugg_both.setChecked(True)
+        
         self.act_insert_date = QtGui.QAction("Insert Date/Time", self, shortcut="Ctrl+Shift+D", triggered=self._insert_datetime)
         self.act_insert_line = QtGui.QAction("Insert Horizontal Line", self, triggered=self._insert_horizontal_line)
         self.act_word_wrap = QtGui.QAction("Toggle Word Wrap", self, triggered=self._toggle_wrap)
@@ -1546,12 +1768,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tpl_btn.setMenu(self.tpl_menu)
         tb_file.addWidget(self.tpl_btn)
         self.tpl_menu.aboutToShow.connect(self._populate_template_menu)
-
         tb_file.addSeparator()
+        
         tb_file.addAction(self.act_undo)
         tb_file.addAction(self.act_redo)
         tb_file.addAction(self.act_theme)
-        tb_file.addAction(self.act_print_layout)
 
         self.addToolBarBreak() 
         tb_fmt = QtWidgets.QToolBar("Format")
@@ -1574,33 +1795,45 @@ class MainWindow(QtWidgets.QMainWindow):
         self.font_size_spin.valueChanged.connect(self._font_size_changed)
         tb_fmt.addWidget(self.font_size_spin)
 
-        tb_fmt.addSeparator()
+
         add_fmt("Color", self._choose_text_color)
         add_fmt("Highlight", self._choose_highlight)
         tb_fmt.addSeparator()
-
         add_fmt("B", lambda: self._toggle_format('bold'), "Ctrl+B")
         add_fmt("I", lambda: self._toggle_format('italic'), "Ctrl+I")
         add_fmt("U", lambda: self._toggle_format('underline'), "Ctrl+U")
         add_fmt("S", lambda: self._toggle_format('strike'))
-        
         tb_fmt.addSeparator()
         add_fmt("X₂", lambda: self._toggle_format('subscript'), "Ctrl+=")
         add_fmt("X²", lambda: self._toggle_format('superscript'), "Ctrl+Shift++")
-        
         tb_fmt.addSeparator()
-        add_fmt("Left", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignLeft))
-        add_fmt("Center", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignCenter))
-        add_fmt("Right", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignRight))
-        add_fmt("Justify", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignJustify))
-
+        add_fmt("L", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignLeft))
+        add_fmt("C", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignCenter))
+        add_fmt("R", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignRight))
+        add_fmt("J", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignJustify))
         tb_fmt.addSeparator()
         add_fmt("Bullet", self._insert_bullet)
-        add_fmt("Numbered", self._insert_numbered)
+        
+        self.btn_numbered = QtWidgets.QToolButton()
+        self.btn_numbered.setText("Number")
+        self.btn_numbered.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.menu_numbered = QtWidgets.QMenu(self.btn_numbered)
+        self.btn_numbered.setMenu(self.menu_numbered)
+        
+        styles = {
+            "1, 2, 3...": QtGui.QTextListFormat.Style.ListDecimal,
+            "a, b, c...": QtGui.QTextListFormat.Style.ListLowerAlpha,
+            "A, B, C...": QtGui.QTextListFormat.Style.ListUpperAlpha,
+            "i, ii, iii...": QtGui.QTextListFormat.Style.ListLowerRoman,
+            "I, II, III...": QtGui.QTextListFormat.Style.ListUpperRoman,
+        }
+        for label, style in styles.items():
+            self.menu_numbered.addAction(label, lambda s=style: self._insert_numbered(s))
+        tb_fmt.addWidget(self.btn_numbered)
+        
         tb_fmt.addSeparator()
         add_fmt("Table", self._insert_table)
-        add_fmt("Image", self._insert_image)
-        
+        add_fmt("Img", self._insert_image)
         tb_fmt.addSeparator()
         self.speech_label = QtWidgets.QLabel("Hold Ctrl+L to speak")
         self.speech_label.setStyleSheet("padding-left: 10px; color: #888;")
@@ -1644,10 +1877,15 @@ class MainWindow(QtWidgets.QMainWindow):
         editm.addAction(self.act_insert_line) 
         
         viewm = men.addMenu("&View")
-        viewm.addAction(self.act_print_layout)
+        pagem = viewm.addMenu("Page Layout View")
+        pagem.addAction(self.act_view_web)
+        pagem.addAction(self.act_view_port)
+        pagem.addAction(self.act_view_land)
+        suggm = viewm.addMenu("Suggestion UI Mode")
+        suggm.addAction(self.act_sugg_dock)
+        suggm.addAction(self.act_sugg_inline)
+        suggm.addAction(self.act_sugg_both)
         viewm.addSeparator()
-        viewm.addAction(self.act_zoom_in)
-        viewm.addAction(self.act_zoom_out)
         viewm.addAction(self.act_word_wrap)
 
         toolsm = men.addMenu("&Tools")
@@ -1664,16 +1902,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
-        v.setContentsMargins(0, 0, 0, 0)
+        v.setContentsMargins(0, 0, 0, 0)  # Reverted to 0 for a flush, clean look
         
         self.ph_list = QtWidgets.QListWidget()
         self.ph_list.addItems(self.state.phrases)
         self.ph_list.itemDoubleClicked.connect(lambda i: self.editor.textCursor().insertText(i.text()))
-        
         self.ph_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.ph_list.customContextMenuRequested.connect(self._show_phrase_context_menu)
-        
         v.addWidget(self.ph_list)
+        
         w.setLayout(v)
         self.dock.setWidget(w)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock)
@@ -1681,62 +1918,58 @@ class MainWindow(QtWidgets.QMainWindow):
     def _show_phrase_context_menu(self, pos):
         menu = QtWidgets.QMenu(self.ph_list)
         act_add = menu.addAction("Add new phrase...")
+        act_edit = menu.addAction("Edit selected phrase") # NEW
         act_rem = menu.addAction("Remove selected phrase")
         
-        if self.ph_list.currentRow() < 0:
+        # Disable Edit and Remove if no item is selected
+        if self.ph_list.currentRow() < 0: 
+            act_edit.setEnabled(False)
             act_rem.setEnabled(False)
             
         action = menu.exec(self.ph_list.mapToGlobal(pos))
-        if action == act_add:
-            self._add_phrase()
-        elif action == act_rem:
-            self._remove_phrase()
+        
+        if action == act_add: self._add_phrase()
+        elif action == act_edit: self._edit_phrase() # NEW
+        elif action == act_rem: self._remove_phrase()
 
     def _build_suggestions_sidebar(self):
-        self.sugg_dock = QtWidgets.QDockWidget("Suggestions (Ctrl+↑/↓, Tab to insert)", self)
+        self.sugg_dock = QtWidgets.QDockWidget("Suggestions (Ctrl+↑/↓, Tab)", self)
         self.sugg_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        
+        # FIX: Replaced 'setFixedWidth' with 'setMinimumWidth' so it is freely resizable again
+        self.sugg_dock.setMinimumWidth(150) 
+        
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
-        
         self.sugg_list = QtWidgets.QListWidget()
         self.sugg_list.setFocusPolicy(Qt.FocusPolicy.NoFocus) 
-        self.sugg_list.itemClicked.connect(lambda i: self.editor.insert_suggestion(i.data(Qt.ItemDataRole.UserRole)))
+        self.sugg_list.itemClicked.connect(lambda i: self.editor.insert_suggestion_from_dock(i.data(Qt.ItemDataRole.UserRole)))
         v.addWidget(self.sugg_list)
-        
         w.setLayout(v)
         self.sugg_dock.setWidget(w)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.sugg_dock)
-
-    @QtCore.Slot(str)
-    def _update_suggestions(self, prefix: str):
-        self.sugg_list.clear()
-        if not prefix or len(prefix) < 1:
-            self.editor.set_has_suggestions(False)
-            return
-            
-        prefix_lower = prefix.lower()
-        matches = []
         
-        for word in self.state.suggestion_words:
-            if word.lower().startswith(prefix_lower):
-                matches.append(word)
-                    
-        matches.sort(key=len)
+        if self.state.suggestion_mode == "Inline": self.sugg_dock.hide()
 
-        for word in matches[:100]:
+    @QtCore.Slot(list)
+    def _populate_dock_suggestions(self, matches: list):
+        self.sugg_list.clear()
+        if not matches:
+            self.editor.set_has_dock_suggestions(False)
+            return
+        for word in matches:
             item = QtWidgets.QListWidgetItem(word)
             item.setData(Qt.ItemDataRole.UserRole, word)
             self.sugg_list.addItem(item)
-            
         if self.sugg_list.count() > 0:
             self.sugg_list.setCurrentRow(0)
-            self.editor.set_has_suggestions(True)
+            self.editor.set_has_dock_suggestions(True)
         else:
-            self.editor.set_has_suggestions(False)
+            self.editor.set_has_dock_suggestions(False)
 
     @QtCore.Slot(int)
-    def _navigate_suggestion_list(self, step: int):
+    def _navigate_dock_suggestion_list(self, step: int):
         c = self.sugg_list.count()
         if c == 0: return
         curr = self.sugg_list.currentRow()
@@ -1744,93 +1977,221 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sugg_list.setCurrentRow(new_row)
 
     @QtCore.Slot()
-    def _insert_selected_suggestion(self):
+    def _insert_selected_dock_suggestion(self):
         row = self.sugg_list.currentRow()
         if row >= 0:
             word = self.sugg_list.item(row).data(Qt.ItemDataRole.UserRole)
-            self.editor.insert_suggestion(word)
+            self.editor.insert_suggestion_from_dock(word)
 
     def _build_statusbar(self):
         self.status = self.statusBar()
-        
         self.lbl_cursor_pos = QtWidgets.QLabel("Ln 1, Col 0")
         self.lbl_counts = QtWidgets.QLabel("0 words • 0 chars")
+        self.lbl_doc_time = QtWidgets.QLabel("Doc: 00:00:00")
+        self.lbl_app_time = QtWidgets.QLabel("App: 00:00:00")
         self.lbl_translit_badge = QtWidgets.QLabel()
         
         self.lbl_cursor_pos.setStyleSheet("padding-right: 15px;")
         self.lbl_counts.setStyleSheet("padding-right: 15px;")
+        self.lbl_doc_time.setStyleSheet("padding-right: 15px;")
+        self.lbl_app_time.setStyleSheet("padding-right: 15px;")
         
         self.status.addPermanentWidget(self.lbl_cursor_pos)
         self.status.addPermanentWidget(self.lbl_counts)
+        self.status.addPermanentWidget(self.lbl_doc_time)
+        self.status.addPermanentWidget(self.lbl_app_time)
         self.status.addPermanentWidget(self.lbl_translit_badge)
 
-    def _update_translit_badge(self):
-        if self.state.transliteration_enabled:
+    def _update_translit_badge(self, _=None):
+        if self.editor._english_mode:
+            self.lbl_translit_badge.setText("EN / HINGLISH")
+            self.lbl_translit_badge.setStyleSheet("color: white; background-color: #3b82f6; padding: 2px 6px; border-radius: 4px; font-weight: bold;")
+        elif self.state.transliteration_enabled:
             self.lbl_translit_badge.setText("TRANSLIT: ON")
-            self.lbl_translit_badge.setStyleSheet("color: white; background-color: #4CAF50; padding: 2px 5px; border-radius: 3px; font-weight: bold;")
+            self.lbl_translit_badge.setStyleSheet("color: white; background-color: #10b981; padding: 2px 6px; border-radius: 4px; font-weight: bold;")
         else:
             self.lbl_translit_badge.setText("TRANSLIT: OFF")
-            self.lbl_translit_badge.setStyleSheet("color: white; background-color: #F44336; padding: 2px 5px; border-radius: 3px; font-weight: bold;")
+            self.lbl_translit_badge.setStyleSheet("color: white; background-color: #ef4444; padding: 2px 6px; border-radius: 4px; font-weight: bold;")
 
     def _page_setup(self):
         dialog = QPageSetupDialog(self.printer, self)
         if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             self._update_view_mode()
 
-    def _toggle_print_layout(self):
-        self.print_layout_enabled = self.act_print_layout.isChecked()
+    def _change_view_mode(self):
+        if self.act_view_port.isChecked(): self.state.view_mode = "Portrait"
+        elif self.act_view_land.isChecked(): self.state.view_mode = "Landscape"
+        else: self.state.view_mode = "Web"
         self._update_view_mode()
+
+    def _change_suggestion_mode(self):
+        if self.act_sugg_dock.isChecked(): 
+            self.state.suggestion_mode = "Dock"
+            self.sugg_dock.show()
+        elif self.act_sugg_inline.isChecked(): 
+            self.state.suggestion_mode = "Inline"
+            self.sugg_dock.hide()
+        else: 
+            self.state.suggestion_mode = "Both"
+            self.sugg_dock.show()
+
+    def _apply_theme(self):
+        if self.dark_mode_enabled:
+            self.setStyleSheet("""
+                QMainWindow, QDialog, QMessageBox, QInputDialog, QFileDialog, QPageSetupDialog { background-color: #111827; color: #f9fafb; }
+                QLabel, QCheckBox, QRadioButton, QGroupBox { color: #f9fafb; }
+                
+                QToolBar { background-color: #1f2937; border-bottom: 1px solid #374151; padding: 4px; spacing: 4px; }
+                
+                QToolButton { background-color: transparent; color: #f9fafb; border-radius: 6px; padding: 6px; font-weight: 500; }
+                QPushButton { background-color: #374151; color: #f9fafb; border: 1px solid #4b5563; border-radius: 6px; padding: 6px 12px; font-weight: bold; }
+                QToolButton:hover { background-color: #374151; }
+                QPushButton:hover { background-color: #4b5563; }
+                QToolButton:pressed, QPushButton:pressed { background-color: #1f2937; }
+                
+                QMenu { background-color: #1f2937; color: #f9fafb; border: 1px solid #4b5563; border-radius: 6px; padding: 4px; }
+                QMenu::item { padding: 6px 24px 6px 12px; border-radius: 4px; background-color: transparent; }
+                QMenu::item:selected { background-color: #059669; color: white; }
+                QMenu::separator { background-color: #4b5563; height: 1px; margin: 4px 0px; }
+                
+                QMenuBar { background-color: #1f2937; border-bottom: 1px solid #374151; }
+                QMenuBar::item { padding: 6px 10px; border-radius: 4px; color: #f9fafb; }
+                QMenuBar::item:selected { background-color: #374151; }
+                
+                QDockWidget { color: #f9fafb; font-weight: bold; }
+                QDockWidget::title { background-color: #1f2937; padding: 6px; text-align: left; }
+                QDockWidget > QWidget { background-color: #1f2937; border: 1px solid #374151; border-radius: 8px; margin: 4px; }
+                
+                QListWidget, QTableWidget { background-color: #1f2937; border: 1px solid #374151; color: #f9fafb; border-radius: 6px; }
+                QListWidget#suggPopup { background-color: rgba(31, 41, 55, 245); color: #f9fafb; border: 1px solid #4b5563; border-radius: 8px; font-size: 15px; outline: none; }
+                QListWidget::item, QTableWidget::item { padding: 6px; border-radius: 4px; }
+                QListWidget::item:selected, QTableWidget::item:selected, QListWidget#suggPopup::item:selected { background-color: #059669; color: #ffffff; }
+                QScrollArea { background-color: transparent; border: none; }
+                QFrame#page_frame { background-color: #1f2937; border: 1px solid #374151; border-radius: 8px; }
+                
+                QPrintPreviewDialog { background-color: #111827; }
+                QPrintPreviewDialog QToolBar { background-color: #1f2937; border: none; }
+                QPrintPreviewDialog QToolButton { background-color: #374151; color: #f9fafb; border: 1px solid #4b5563; border-radius: 4px; padding: 4px; margin: 2px; }
+                QPrintPreviewDialog QToolButton:hover { background-color: #4b5563; }
+                
+                QStatusBar { background-color: #1f2937; color: #d1d5db; border-top: 1px solid #374151; }
+                QStatusBar QLabel { color: #d1d5db; background: transparent; }
+                QTextEdit { background-color: transparent; color: #f9fafb; border: none; }
+                QLineEdit, QSpinBox, QFontComboBox { background-color: #374151; color: #f9fafb; border: 1px solid #4b5563; border-radius: 4px; padding: 4px; }
+                
+                /* Ensures text remains visible while editing Grid Items */
+                /* Fixes clipping and removes the thick focus border in Dark Mode */
+                QTableWidget QLineEdit { 
+                    background-color: #374151; 
+                    color: #ffffff; 
+                    border: none; 
+                    padding: 0px; 
+                    margin: 0px; 
+                    outline: none; 
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QMainWindow, QDialog, QMessageBox, QInputDialog, QFileDialog { background-color: #f3f4f6; color: #111827; }
+                QLabel, QCheckBox, QRadioButton, QGroupBox { color: #111827; }
+                
+                QToolBar { background-color: #ffffff; border-bottom: 1px solid #e5e7eb; padding: 4px; spacing: 4px; }
+                
+                QToolButton { background-color: transparent; color: #374151; border-radius: 6px; padding: 6px; font-weight: 500; }
+                QPushButton { background-color: #ffffff; color: #111827; border: 1px solid #d1d5db; border-radius: 6px; padding: 6px 12px; font-weight: bold; }
+                QToolButton:hover { background-color: #e5e7eb; }
+                QPushButton:hover { background-color: #f3f4f6; }
+                QToolButton:pressed, QPushButton:pressed { background-color: #d1d5db; }
+                
+                QMenu { background-color: #ffffff; color: #111827; border: 1px solid #d1d5db; border-radius: 6px; padding: 4px; }
+                QMenu::item { padding: 6px 24px 6px 12px; border-radius: 4px; background-color: transparent; }
+                QMenu::item:selected { background-color: #059669; color: white; }
+                QMenu::separator { background-color: #e5e7eb; height: 1px; margin: 4px 0px; }
+                
+                QMenuBar { background-color: #ffffff; border-bottom: 1px solid #e5e7eb; }
+                QMenuBar::item { padding: 6px 10px; border-radius: 4px; color: #111827; }
+                QMenuBar::item:selected { background-color: #f3f4f6; }
+                
+                QDockWidget { color: #111827; font-weight: bold; }
+                QDockWidget::title { background-color: #e5e7eb; padding: 6px; text-align: left; }
+                QDockWidget > QWidget { background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; margin: 4px; }
+                
+                QListWidget, QTableWidget { background-color: #ffffff; border: 1px solid #d1d5db; color: #111827; border-radius: 6px; }
+                QListWidget#suggPopup { background-color: rgba(255, 255, 255, 245); color: #374151; border: 1px solid #d1d5db; border-radius: 8px; font-size: 15px; outline: none; }
+                QListWidget::item, QTableWidget::item { padding: 6px; border-radius: 4px; }
+                QListWidget::item:selected, QTableWidget::item:selected, QListWidget#suggPopup::item:selected { background-color: #059669; color: #ffffff; }
+                QScrollArea { background-color: transparent; border: none; }
+                QFrame#page_frame { background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; }
+ 
+                QPrintPreviewDialog { background-color: #f3f4f6; }
+                QPrintPreviewDialog QToolBar { background-color: #ffffff; border: none; }
+                QPrintPreviewDialog QToolButton { background-color: #e5e7eb; color: #111827; border: 1px solid #d1d5db; border-radius: 4px; padding: 4px; margin: 2px; }
+                QPrintPreviewDialog QToolButton:hover { background-color: #d1d5db; }
+ 
+                QStatusBar { background-color: #ffffff; color: #374151; border-top: 1px solid #e5e7eb; }
+                QStatusBar QLabel { color: #374151; background: transparent; }
+                QTextEdit { background-color: transparent; color: #000000; border: none; }
+                QLineEdit, QSpinBox, QFontComboBox { background-color: #ffffff; color: #111827; border: 1px solid #d1d5db; border-radius: 4px; padding: 4px; }
+                
+                /* Ensures text remains visible while editing Grid Items */
+                /* Fixes clipping and removes the thick focus border in Light Mode */
+                QTableWidget QLineEdit { 
+                    background-color: #ffffff; 
+                    color: #000000; 
+                    border: none; 
+                    padding: 0px; 
+                    margin: 0px; 
+                    outline: none; 
+                }
+            """)
 
     def _update_view_mode(self):
         fmt = self.editor.document().rootFrame().frameFormat()
         
-        if self.print_layout_enabled:
+        if self.state.view_mode in ["Portrait", "Landscape"]:
+            self.canvas_layout.setContentsMargins(40, 40, 40, 40)
             layout = self.printer.pageLayout()
-            try:
-                full_rect = layout.fullRectPixels(96)
-                margins = layout.marginsPixels(96)
-                self.editor.document().setPageSize(QtCore.QSizeF(full_rect.width(), full_rect.height()))
-                fmt.setTopMargin(margins.top())
-                fmt.setBottomMargin(margins.bottom())
-                fmt.setLeftMargin(margins.left())
-                fmt.setRightMargin(margins.right())
-            except Exception:
-                self.editor.document().setPageSize(QtCore.QSizeF(794, 1123))
-                fmt.setTopMargin(96); fmt.setBottomMargin(96); fmt.setLeftMargin(96); fmt.setRightMargin(96)
-
-            fmt.setBackground(QtGui.QColor("#ffffff"))
+            margins = layout.marginsPixels(96)
+            
+            if self.state.view_mode == "Portrait":
+                self.page_frame.setFixedWidth(816)
+                self.page_frame.setMinimumHeight(1056)
+                self.editor.document().setPageSize(QtCore.QSizeF(816, 1056))
+            else:
+                self.page_frame.setFixedWidth(1056)
+                self.page_frame.setMinimumHeight(816)
+                self.editor.document().setPageSize(QtCore.QSizeF(1056, 816))
+                
+            fmt.setTopMargin(margins.top()); fmt.setBottomMargin(margins.bottom())
+            fmt.setLeftMargin(margins.left()); fmt.setRightMargin(margins.right())
             
             if self.dark_mode_enabled:
-                self.editor.setStyleSheet("QTextEdit { background-color: #2b2b2b; color: #000000; border: none; }")
+                fmt.setBackground(QtGui.QColor("#1f2937"))
             else:
-                self.editor.setStyleSheet("QTextEdit { background-color: #e0e0e0; color: #000000; border: none; }")
+                fmt.setBackground(QtGui.QColor("#ffffff"))
+                
         else:
+            self.page_frame.setMaximumWidth(16777215)
+            self.page_frame.setMinimumHeight(0)
+            self.canvas_layout.setContentsMargins(0, 0, 0, 0)
             self.editor.document().setPageSize(QtCore.QSizeF(-1, -1))
-            fmt.setTopMargin(8)
-            fmt.setBottomMargin(8)
-            fmt.setLeftMargin(8)
-            fmt.setRightMargin(8)
-            fmt.clearBackground()
+            fmt.setTopMargin(8); fmt.setBottomMargin(8)
+            fmt.setLeftMargin(8); fmt.setRightMargin(8)
             
             if self.dark_mode_enabled:
-                self.editor.setStyleSheet("QTextEdit { background-color: #1e1e1e; color: #ffffff; border: 1px solid #555; }")
+                fmt.setBackground(QtGui.QColor("#111827"))
             else:
-                self.editor.setStyleSheet("")
+                fmt.clearBackground()
                 
         self.editor.document().rootFrame().setFormat(fmt)
 
     def _toggle_theme(self):
         self.dark_mode_enabled = not self.dark_mode_enabled
-        if self.dark_mode_enabled:
-            self.setStyleSheet("""
-                QMainWindow, QDialog, QDockWidget, QMenuBar, QMenu { background-color: #2b2b2b; color: #ffffff; }
-                QToolBar { background-color: #333333; border: none; }
-                QPushButton, QToolButton { background-color: #444; color: white; border-radius: 3px; padding: 4px; }
-                QPushButton:hover, QToolButton:hover { background-color: #555; }
-                QTableWidget, QListWidget, QLineEdit { background-color: #1e1e1e; color: #ffffff; border: 1px solid #555; }
-            """)
-        else:
-            self.setStyleSheet("")
+        
+        # --- NEW: Save the preference to memory ---
+        self.settings.setValue("dark_mode", self.dark_mode_enabled)
+        
+        self._apply_theme()
         self._update_view_mode()
 
     def _insert_template_safe(self, html: str):
@@ -1840,22 +2201,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _toggle_format(self, fmt_type):
         cur = self.editor.textCursor()
         fmt = cur.charFormat()
-        
         if fmt_type == 'bold': fmt.setFontWeight(QtGui.QFont.Weight.Bold if fmt.fontWeight() != QtGui.QFont.Weight.Bold else QtGui.QFont.Weight.Normal)
         elif fmt_type == 'italic': fmt.setFontItalic(not fmt.fontItalic())
         elif fmt_type == 'underline': fmt.setFontUnderline(not fmt.fontUnderline())
         elif fmt_type == 'strike': fmt.setFontStrikeOut(not fmt.fontStrikeOut())
         elif fmt_type == 'subscript':
-            if fmt.verticalAlignment() == QTextCharFormat.VerticalAlignment.AlignSubScript:
-                fmt.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignNormal)
-            else:
-                fmt.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignSubScript)
+            fmt.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignNormal if fmt.verticalAlignment() == QTextCharFormat.VerticalAlignment.AlignSubScript else QTextCharFormat.VerticalAlignment.AlignSubScript)
         elif fmt_type == 'superscript':
-            if fmt.verticalAlignment() == QTextCharFormat.VerticalAlignment.AlignSuperScript:
-                fmt.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignNormal)
-            else:
-                fmt.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignSuperScript)
-            
+            fmt.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignNormal if fmt.verticalAlignment() == QTextCharFormat.VerticalAlignment.AlignSuperScript else QTextCharFormat.VerticalAlignment.AlignSuperScript)
         if cur.hasSelection(): cur.mergeCharFormat(fmt)
         else: self.editor.mergeCurrentCharFormat(fmt)
         self.editor.setFocus()
@@ -1898,12 +2251,11 @@ class MainWindow(QtWidgets.QMainWindow):
             else: self.editor.mergeCurrentCharFormat(fmt)
             self.editor.setFocus()
 
-    def _insert_bullet(self):
-        self.editor.textCursor().insertList(QtGui.QTextListFormat.Style.ListDisc)
+    def _insert_bullet(self): self.editor.textCursor().insertList(QtGui.QTextListFormat.Style.ListDisc)
 
-    def _insert_numbered(self):
+    def _insert_numbered(self, list_style=QtGui.QTextListFormat.Style.ListDecimal):
         fmt = QtGui.QTextListFormat()
-        fmt.setStyle(QtGui.QTextListFormat.Style.ListDecimal)
+        fmt.setStyle(list_style)
         self.editor.textCursor().createList(fmt)
 
     def _insert_table(self):
@@ -1920,10 +2272,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.editor._commit_composing()
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Insert Image", "", "Images (*.png *.jpg *.bmp *.gif *.jpeg)")
         if not path: return
-        
         width, ok = QtWidgets.QInputDialog.getInt(self, "Image Size", "Width (pixels):", 400, 50, 1000)
         if not ok: return
-        
         align_str, ok2 = QtWidgets.QInputDialog.getItem(self, "Alignment", "Choose Alignment:", ["Left", "Center", "Right"], 1, False)
         if not ok2: return
 
@@ -1932,19 +2282,16 @@ class MainWindow(QtWidgets.QMainWindow):
             img = QtGui.QImage(path)
             if img.isNull(): raise ValueError("Cannot load image")
             img = img.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
-            
             fmt = QtGui.QTextImageFormat()
             url = QtCore.QUrl.fromLocalFile(os.path.abspath(path)).toString()
             fmt.setName(url)
             fmt.setWidth(width)
             fmt.setHeight(img.height())
-            
             bf = cur.blockFormat()
             if align_str == "Center": bf.setAlignment(Qt.AlignmentFlag.AlignCenter)
             elif align_str == "Right": bf.setAlignment(Qt.AlignmentFlag.AlignRight)
             else: bf.setAlignment(Qt.AlignmentFlag.AlignLeft)
             cur.setBlockFormat(bf)
-            
             cur.insertImage(fmt)
             self.status.showMessage(f"Inserted image ({width}px, {align_str})", 2000)
         except Exception as e:
@@ -1952,7 +2299,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _set_autosave_interval(self):
         current_sec = self.autosave_timer.interval() // 1000
-        if current_sec == 0: current_sec = 30
+        if current_sec == 0: current_sec = 60
         sec, ok = QtWidgets.QInputDialog.getInt(self, "Autosave Interval", "Interval in seconds:", current_sec, 5, 3600)
         if ok:
             self.autosave_timer.setInterval(sec * 1000)
@@ -1960,8 +2307,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.status.showMessage(f"Autosave interval updated to {sec} seconds", 3000)
                 
     def _insert_datetime(self):
-        dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.editor.textCursor().insertText(dt)
+        self.editor.textCursor().insertText(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         
     def _insert_horizontal_line(self):
         self.editor._commit_composing()
@@ -1976,8 +2322,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.editor.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.NoWrap)
             self.status.showMessage("Word Wrap: OFF", 2000)
 
-    def _new_file(self, prompt_autosave=True):
-        if self.is_dirty or self.editor.toPlainText().strip():
+    def _new_file(self, prompt_autosave=True, is_startup=False):
+        if not is_startup and (self.is_dirty or self.editor.toPlainText().strip()):
             reply = QtWidgets.QMessageBox.question(
                 self, "Save Current Document?",
                 "Do you want to save the current document before starting a new one?",
@@ -1996,6 +2342,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.autosave_timer.stop()
         self.is_dirty = False
         
+        # Reset Document Timer tracking
+        self.doc_seconds = 0
+        self.doc_timer_active = False
+        self.lbl_doc_time.setText("Doc: 00:00:00")
+        
         if prompt_autosave:
             msg = QtWidgets.QMessageBox(self)
             msg.setWindowTitle("Enable Autosave")
@@ -2003,14 +2354,13 @@ class MainWindow(QtWidgets.QMainWindow):
             btn_save = msg.addButton("Save Now", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
             btn_later = msg.addButton("Later", QtWidgets.QMessageBox.ButtonRole.RejectRole)
             msg.exec()
-            
             if msg.clickedButton() == btn_save:
                 path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Initialize Document", "", "Word Document (*.docx);;HTML Web Page (*.html);;Text File (*.txt)")
                 if path:
                     self.current_filepath = path
                     self.autosave_enabled = True
                     interval = self.autosave_timer.interval()
-                    if interval == 0: interval = 30000
+                    if interval == 0: interval = 60000
                     self.autosave_timer.start(interval)
                     self.status.showMessage(f"Auto-save enabled (Every {interval//1000}s).")
 
@@ -2019,6 +2369,9 @@ class MainWindow(QtWidgets.QMainWindow):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open", "", "Documents (*.docx *.html *.htm *.txt *.csv *.xlsx *.ods);;All Files (*.*)")
         if not path: return
         ext = path.lower().split('.')[-1]
+        self.status.showMessage("Opening document, please wait...")
+        QtWidgets.QApplication.processEvents()
+        
         try:
             if ext == "docx" and HAS_DOCX:
                 doc = docx.Document(path)
@@ -2051,18 +2404,21 @@ class MainWindow(QtWidgets.QMainWindow):
             elif ext in ["html", "htm"]:
                 with open(path, "r", encoding="utf-8") as f: self.editor.setHtml(f.read())
             elif ext in ["csv", "xlsx", "ods"]:
-                if ext == "xlsx":
-                    df = pd.read_excel(path, engine="openpyxl")
-                elif ext == "ods":
-                    df = pd.read_excel(path, engine="odf")
-                else:
-                    df = pd.read_csv(path)
+                if ext == "xlsx": df = pd.read_excel(path, engine="openpyxl")
+                elif ext == "ods": df = pd.read_excel(path, engine="odf")
+                else: df = pd.read_csv(path)
                 self.editor.insertHtml(df.to_html(index=False, border=1) + "<br>")
             else:
                 with open(path, "r", encoding="utf-8") as f: self.editor.setPlainText(f.read())
             
             self.current_filepath = path
             self.status.showMessage(f"Opened: {path}", 3000)
+            
+            # Reset timer on new open
+            self.doc_seconds = 0
+            self.doc_timer_active = False
+            self.lbl_doc_time.setText("Doc: 00:00:00")
+            
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Open failed", str(e))
 
@@ -2071,7 +2427,9 @@ class MainWindow(QtWidgets.QMainWindow):
             ext = self.current_filepath.lower().split('.')[-1]
             try:
                 if ext == "docx" and HAS_DOCX: 
-                    self._save_docx_silent(self.current_filepath)
+                    self.status.showMessage("Saving DOCX... please wait.")
+                    QtWidgets.QApplication.processEvents()
+                    export_native_to_docx(self.editor.document(), self.current_filepath)
                 elif ext in ["html", "htm"]:
                     self._save_html_silent(self.current_filepath)
                 else:
@@ -2093,15 +2451,15 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Document", "", "Word Document (*.docx)")
         if path:
+            self.status.showMessage("Exporting to DOCX, please wait...")
+            QtWidgets.QApplication.processEvents()
             try:
                 export_native_to_docx(self.editor.document(), path)
                 self.current_filepath = path
                 self.is_dirty = False
-                
                 self.autosave_enabled = True
                 if not self.autosave_timer.isActive():
-                    self.autosave_timer.start(self.autosave_timer.interval() or 30000)
-
+                    self.autosave_timer.start(self.autosave_timer.interval() or 60000)
                 self.status.showMessage(f"Saved: {path}")
             except PermissionError as e:
                 QtWidgets.QMessageBox.warning(self, "File Locked", str(e))
@@ -2146,29 +2504,54 @@ class MainWindow(QtWidgets.QMainWindow):
         with open(path, "w", encoding="utf-8") as f:
             f.write(html_content)
 
-    def _save_docx_silent(self, path):
-        export_native_to_docx(self.editor.document(), path)
-
     def _export_pdf(self):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export PDF", "", "PDF Document (*.pdf)")
         if path:
-            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-            printer.setPageLayout(self.printer.pageLayout())
-            printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
-            printer.setOutputFileName(path)
-            self.editor.document().print_(printer)
-            self.status.showMessage(f"Exported to PDF: {path}")
+            try:
+                # Create a hidden clone of the document for printing
+                print_doc = self.editor.document().clone(self)
+                
+                # Force the clone to have a white background so it prints correctly
+                fmt = print_doc.rootFrame().frameFormat()
+                fmt.setBackground(QtGui.QColor("#ffffff"))
+                print_doc.rootFrame().setFormat(fmt)
+
+                printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+                printer.setPageLayout(self.printer.pageLayout())
+                printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+                printer.setOutputFileName(path)
+                
+                # Print the clone, not the active dark-mode editor
+                print_doc.print_(printer)
+                self.status.showMessage(f"Exported to PDF: {path}")
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Export Error", str(e))
 
     def _print_doc(self):
         title = APP_NAME + " Document"
-        if self.current_filepath:
-            title = os.path.basename(self.current_filepath)
+        if self.current_filepath: title = os.path.basename(self.current_filepath)
         self.printer.setDocName(title)
         
-        preview = QPrintPreviewDialog(self.printer, self)
-        preview.setWindowTitle("Print Preview - " + APP_NAME)
-        preview.paintRequested.connect(self.editor.print_)
-        preview.exec()
+        try:
+            # Create a hidden clone of the document for printing
+            print_doc = self.editor.document().clone(self)
+            
+            # Force the clone to have a white background so it prints correctly
+            fmt = print_doc.rootFrame().frameFormat()
+            fmt.setBackground(QtGui.QColor("#ffffff"))
+            print_doc.rootFrame().setFormat(fmt)
+
+            preview = QPrintPreviewDialog(self.printer, self)
+            preview.setWindowTitle("Print Preview - " + APP_NAME)
+            
+            # Force a large responsive size so the ribbon fits
+            preview.resize(950, 600) 
+            
+            # Connect the preview to our white-background clone
+            preview.paintRequested.connect(print_doc.print_)
+            preview.exec()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Print Error", str(e))
 
     def _open_corrections(self):
         dlg = CorrectionsDialog(self.state, editor_ref=self.editor, parent=self)
@@ -2198,6 +2581,19 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_cursor_position_label(self, line: int, col: int):
         self.lbl_cursor_pos.setText(f"Ln {line}, Col {col}")
 
+    def _ensure_cursor_visible(self):
+        """Forces both internal and external scroll areas to pan and follow the typing cursor."""
+        
+        # 1. Always ensure the text editor's internal scrollbar tracks the cursor.
+        # This is what fixes the horizontal scrolling issue in Web Layout!
+        self.editor.ensureCursorVisible()
+
+        # 2. If in Canvas mode, also force the outer scroll workspace to pan.
+        if self.state.view_mode in ["Portrait", "Landscape"]:
+            cursor_rect = self.editor.cursorRect()
+            point_on_canvas = self.editor.mapTo(self.canvas_container, cursor_rect.center())
+            self.workspace_scroll.ensureVisible(point_on_canvas.x(), point_on_canvas.y(), 50, 50)
+
     def _add_phrase(self):
         txt, ok = QtWidgets.QInputDialog.getMultiLineText(self, "Add phrase", "Phrase (Devanagari or Latin):")
         if ok and txt.strip():
@@ -2211,30 +2607,144 @@ class MainWindow(QtWidgets.QMainWindow):
             self.state.phrases.pop(r)
             self.ph_list.takeItem(r)
             self.state.save_phrases()
+            
+    def _edit_phrase(self):
+        r = self.ph_list.currentRow()
+        if r >= 0:
+            current_text = self.state.phrases[r]
+            txt, ok = QtWidgets.QInputDialog.getMultiLineText(
+                self, "Edit phrase", "Edit Phrase (Devanagari or Latin):", current_text
+            )
+            if ok and txt.strip():
+                # Update the stored state and the list widget
+                self.state.phrases[r] = txt
+                self.ph_list.item(r).setText(txt)
+                self.state.save_phrases()        
 
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     
-    # Modern font fallback
+    # ---------------------------------------------------------
+    # PREMIUM SPLASH SCREEN LOGIC (Chameleon Edition)
+    # ---------------------------------------------------------
+    splash_pixmap = QtGui.QPixmap("splash.png")
+    
+    # Fallback placeholder matching your 720x740 dimensions
+    if splash_pixmap.isNull():
+        splash_pixmap = QtGui.QPixmap(720, 740)
+        splash_pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(splash_pixmap)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        
+        grad = QtGui.QLinearGradient(0, 0, 720, 740)
+        grad.setColorAt(0, QtGui.QColor("#0f172a"))
+        grad.setColorAt(1, QtGui.QColor("#1e293b"))
+        painter.setBrush(grad)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(0, 0, 720, 740, 24, 24)
+        painter.end()
+
+    # Custom Animated Splash Class
+    class PremiumSplash(QtWidgets.QSplashScreen):
+        def __init__(self, pixmap):
+            super().__init__(pixmap)
+            # Start completely transparent for the fade-in effect
+            self.setWindowOpacity(0.0)
+
+        def drawContents(self, painter):
+            super().drawContents(painter)
+            
+            # 1. Subtle dark vignette at the bottom so the glowing text always pops
+            bottom_grad = QtGui.QLinearGradient(0, self.height() - 250, 0, self.height())
+            bottom_grad.setColorAt(0.0, QtGui.QColor(0, 0, 0, 0))    # Transparent top
+            bottom_grad.setColorAt(1.0, QtGui.QColor(0, 0, 0, 160))  # Smooth dark bottom
+            painter.fillRect(0, self.height() - 250, self.width(), 250, bottom_grad)
+
+            # 2. Cursive Font Setup
+            font = QtGui.QFont()
+            font.setFamilies(["Brush Script MT", "Segoe Script", "Lucida Handwriting", "Monotype Corsiva", "cursive"])
+            font.setPointSize(95) 
+            font.setBold(True)
+            font.setItalic(True)
+            painter.setFont(font)
+            
+            rect = self.rect().adjusted(0, 0, 0, -35)
+            
+            # 3. Outer Glow Aura (Lime/Yellow mix)
+            aura_color = QtGui.QColor(163, 230, 53, 12) 
+            painter.setPen(QtGui.QPen(aura_color))
+            for spread in range(2, 14, 2): 
+                for dx, dy in [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (1,1), (-1,1), (1,-1)]:
+                    offset_rect = rect.translated(dx * spread, dy * spread)
+                    painter.drawText(offset_rect, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, "Translit")
+
+            # 4. Inner Concentrated Glow (Bright Yellow)
+            inner_glow = QtGui.QColor(253, 224, 71, 50) 
+            painter.setPen(QtGui.QPen(inner_glow))
+            for spread in range(1, 4):
+                for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                    offset_rect = rect.translated(dx * spread, dy * spread)
+                    painter.drawText(offset_rect, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, "Translit")
+            
+            # 5. Core Chameleon Gradient Fill
+            grad = QtGui.QLinearGradient(rect.left(), rect.bottom() - 140, rect.right(), rect.bottom())
+            grad.setColorAt(0.0, QtGui.QColor("#fef08a")) # Neon Yellow
+            grad.setColorAt(0.5, QtGui.QColor("#bef264")) # Shifting Yellow-Green
+            grad.setColorAt(1.0, QtGui.QColor("#10b981")) # Deep Emerald
+
+            painter.setPen(QtGui.QPen(QtGui.QBrush(grad), 1))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, "Translit")
+
+    # Launch Animated Splash Screen
+    splash = PremiumSplash(splash_pixmap)
+    splash.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    splash.show()
+    
+    # Smooth Fade-In Animation (1 second)
+    fade_in = QtCore.QPropertyAnimation(splash, b"windowOpacity")
+    fade_in.setDuration(1000)
+    fade_in.setStartValue(0.0)
+    fade_in.setEndValue(1.0)
+    fade_in.start()
+    
+    app.processEvents() 
+    
+    # ---------------------------------------------------------
+    # MAIN APP INITIALIZATION
+    # ---------------------------------------------------------
     available_families = QtGui.QFontDatabase.families()
     target_font = "Arial"
-    
     for f in ["Nirmala UI", "Mangal", "Noto Sans Devanagari", "Arial Unicode MS"]:
         if f in available_families:
             target_font = f
             break
             
-    if target_font:
-        app.setFont(QtGui.QFont(target_font, 10))
-    
+    if target_font: app.setFont(QtGui.QFont(target_font, 10))
     if not HAS_TRANSLIT:
         QtWidgets.QMessageBox.critical(None, "Missing dependency", "Please install indic-transliteration")
         return
         
     win = MainWindow()
-    win.show()
+    
+    # Smooth Fade-Out Animation (0.8 seconds)
+    def start_fade_out():
+        fade_out = QtCore.QPropertyAnimation(splash, b"windowOpacity")
+        fade_out.setDuration(800)
+        fade_out.setStartValue(1.0)
+        fade_out.setEndValue(0.0)
+        fade_out.finished.connect(splash.close)
+        fade_out.start()
+        # Keep a reference so Python's garbage collector doesn't kill the animation early
+        splash.fade_out_anim = fade_out
+
+    # Timers to control the flow:
+    # 1. Start fading out the splash screen after 2.8 seconds
+    QTimer.singleShot(2800, start_fade_out)
+    # 2. Show the main window underneath exactly as the splash finishes fading
+    QTimer.singleShot(3400, win.show)
+    
     sys.exit(app.exec())
 
 if __name__ == "__main__":
