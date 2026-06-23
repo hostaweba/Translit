@@ -20,12 +20,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtGui import QIcon, QTextCharFormat, QFont
+from PySide6.QtGui import QIcon, QTextCharFormat, QFont, QPixmap, QImage, QPainter, QPen, QColor, QTransform, QPainterPath
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog, QPageSetupDialog
 
 import urllib.request
 import urllib.parse
+import uuid
+
+
 
 # --- LOCAL MODULE IMPORTS ---
 import templates
@@ -1730,8 +1733,7 @@ class HindiEditor(QtWidgets.QTextEdit):
         # IMAGE CONTEXT MENU
         char_fmt = cur.charFormat()
         if char_fmt.isImageFormat():
-            img_menu = menu.addMenu("Image Formatting")
-            img_menu.addAction("Resize Image...", lambda: self.contextActionTriggered.emit("resize_image"))
+            menu.addAction("Image Studio...", lambda: self.contextActionTriggered.emit("advanced_image"))
             menu.addSeparator()
 
         # TABLE CONTEXT MENU
@@ -2186,28 +2188,34 @@ class MainWindow(QtWidgets.QMainWindow):
                 fmt = table.format()
                 fmt.setBorder(0 if fmt.border() > 0 else 1)
                 table.setFormat(fmt)
-        elif action == "resize_image":
+        elif action == "advanced_image":
             cur = self.editor.textCursor()
             fmt = cur.charFormat().toImageFormat()
             if fmt.isValid():
-                # Extract clean local path safely handling PySide6 URI prefixes
                 img_path = QtCore.QUrl(fmt.name()).toLocalFile() if fmt.name().startswith("file://") else fmt.name()
                 
-                # Open up a dedicated modification window
+                # Launch the Ultimate Image Studio
                 dialog = ImagePropertiesDialog(img_path, fmt.width(), fmt.height(), self)
                 if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
-                    new_w, new_h, cropped_path = dialog.get_results()
+                    new_w, new_h, modified_path, page_align = dialog.get_results()
                     
-                    # Force editor selection onto the image char to ensure format sticks
                     cur.movePosition(QtGui.QTextCursor.MoveOperation.Left, QtGui.QTextCursor.MoveMode.KeepAnchor)
                     
-                    # Update target source metadata if a crop operation occurred
-                    if cropped_path:
-                        fmt.setName(QtCore.QUrl.fromLocalFile(cropped_path).toString())
+                    if modified_path:
+                        fmt.setName(QtCore.QUrl.fromLocalFile(modified_path).toString())
                         
                     fmt.setWidth(float(new_w))
                     fmt.setHeight(float(new_h))
                     cur.setCharFormat(fmt)
+                    
+                    # Apply Page Alignment
+                    bf = cur.blockFormat()
+                    if page_align == "Center": bf.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    elif page_align == "Right": bf.setAlignment(Qt.AlignmentFlag.AlignRight)
+                    else: bf.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                    cur.setBlockFormat(bf)
+                    
+                    self._mark_dirty()
                     
         elif action == "context_correct_all":
             cur = self.editor.textCursor()
@@ -3198,93 +3206,458 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.ph_list.item(r).setText(txt)
                 self.state.save_phrases()        
 
+
+
+class VisualCropDialog(QtWidgets.QDialog):
+    """A dedicated interactive interface for visually cropping images with fixed aspect ratios."""
+    def __init__(self, qimage: QtGui.QImage, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Visual Cropping Tool")
+        self.resize(800, 600)
+        self.original_image = qimage
+        self.cropped_image = None
+        self.ratio = None # None means freeform
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        # Toolbar
+        toolbar = QtWidgets.QHBoxLayout()
+        toolbar.addWidget(QtWidgets.QLabel("<b>1. Select Aspect Ratio:</b>"))
+        
+        self.combo_ratio = QtWidgets.QComboBox()
+        self.combo_ratio.addItems([
+            "Freeform (No Limits)", 
+            "Passport Size (3.5 x 4.5 cm)", 
+            "Square (1:1)", 
+            "Standard (4:3)", 
+            "Widescreen (16:9)"
+        ])
+        self.combo_ratio.currentIndexChanged.connect(self._change_ratio)
+        toolbar.addWidget(self.combo_ratio)
+        toolbar.addWidget(QtWidgets.QLabel("  |  <b>2. Draw or Drag the box over the face.</b>"))
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        # Interactive Image Canvas
+        self.scroll_area = QtWidgets.QScrollArea()
+        self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label = QtWidgets.QLabel()
+        self.pixmap = QtGui.QPixmap.fromImage(self.original_image)
+        self.image_label.setPixmap(self.pixmap)
+        self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+        self.scroll_area.setWidget(self.image_label)
+        layout.addWidget(self.scroll_area)
+
+        # Rubber Band (The visual crop box)
+        self.rubber_band = QtWidgets.QRubberBand(QtWidgets.QRubberBand.Shape.Rectangle, self.image_label)
+        self.origin = QtCore.QPoint()
+        self.is_drawing = False
+        self.is_moving = False
+        self.drag_offset = QtCore.QPoint()
+
+        # Wire up mouse events manually to the label
+        self.image_label.mousePressEvent = self._mouse_press
+        self.image_label.mouseMoveEvent = self._mouse_move
+        self.image_label.mouseReleaseEvent = self._mouse_release
+
+        # Footer Buttons
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_cancel = QtWidgets.QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        self.btn_apply = QtWidgets.QPushButton("Apply Visual Crop")
+        self.btn_apply.setStyleSheet("background-color: #10b981; color: white;")
+        self.btn_apply.clicked.connect(self._apply_crop)
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_cancel)
+        btn_layout.addWidget(self.btn_apply)
+        layout.addLayout(btn_layout)
+
+    def _change_ratio(self, index):
+        if index == 1: self.ratio = 3.5 / 4.5 # Passport
+        elif index == 2: self.ratio = 1.0 # Square
+        elif index == 3: self.ratio = 4.0 / 3.0 # 4:3
+        elif index == 4: self.ratio = 16.0 / 9.0 # 16:9
+        else: self.ratio = None
+        self.rubber_band.hide()
+
+    def _mouse_press(self, event):
+        if self.rubber_band.isVisible() and self.rubber_band.geometry().contains(event.pos()):
+            # Clicked inside the box -> Move it
+            self.is_moving = True
+            self.drag_offset = event.pos() - self.rubber_band.pos()
+            self.image_label.setCursor(Qt.CursorShape.ClosedHandCursor)
+        else:
+            # Clicked outside -> Draw new box
+            self.is_drawing = True
+            self.origin = event.pos()
+            self.rubber_band.setGeometry(QtCore.QRect(self.origin, QtCore.QSize()))
+            self.rubber_band.show()
+
+    def _mouse_move(self, event):
+        if self.is_drawing:
+            rect = QtCore.QRect(self.origin, event.pos()).normalized()
+            if self.ratio:
+                # Lock aspect ratio
+                w = rect.width()
+                h = int(w / self.ratio)
+                rect.setHeight(h)
+            self.rubber_band.setGeometry(rect)
+        elif self.is_moving:
+            # Drag the box around
+            new_pos = event.pos() - self.drag_offset
+            rect = self.rubber_band.geometry()
+            rect.moveTo(new_pos)
+            
+            # Keep inside image bounds
+            if rect.left() < 0: rect.moveLeft(0)
+            if rect.top() < 0: rect.moveTop(0)
+            if rect.right() > self.pixmap.width(): rect.moveRight(self.pixmap.width())
+            if rect.bottom() > self.pixmap.height(): rect.moveBottom(self.pixmap.height())
+            
+            self.rubber_band.setGeometry(rect)
+
+    def _mouse_release(self, event):
+        self.is_drawing = False
+        self.is_moving = False
+        self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+
+    def _apply_crop(self):
+        if not self.rubber_band.isVisible():
+            QtWidgets.QMessageBox.warning(self, "No Selection", "Please draw a box over the image first.")
+            return
+            
+        rect = self.rubber_band.geometry()
+        # Ensure we don't try to crop a 0px box
+        if rect.width() < 10 or rect.height() < 10:
+            return
+            
+        self.cropped_image = self.original_image.copy(rect)
+        self.accept()
+
+
 class ImagePropertiesDialog(QtWidgets.QDialog):
     def __init__(self, img_path, current_w, current_h, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Advanced Image Configurations")
+        self.setWindowTitle("Image Studio")
+        self.resize(850, 520) 
         self.img_path = img_path
-        self.cropped_path = None
+        self.modified_path = None
         
         self.PX_TO_CM = 0.0264583333
         self.PX_TO_INCH = 0.0104166667
+        self.last_unit = 0
+        self._updating_sizes = False 
         
-        layout = QtWidgets.QVBoxLayout(self)
+        # We store the image here. If cropped, this updates!
+        self.orig_image = QtGui.QImage(self.img_path)
+        self.orig_ratio = self.orig_image.width() / max(1, self.orig_image.height())
+
+        main_layout = QtWidgets.QHBoxLayout(self)
         
-        geo_box = QtWidgets.QGroupBox("Dimensions Matrix")
-        geo_layout = QtWidgets.QGridLayout(geo_box)
+        # --- LEFT PANEL: COMPREHENSIVE CONTROLS ---
+        left_panel = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         
-        geo_layout.addWidget(QtWidgets.QLabel("Unit System:"), 0, 0)
+        self.tabs = QtWidgets.QTabWidget()
+        
+        # TAB 1: Size & Transform
+        tab_dim = QtWidgets.QWidget()
+        dim_layout = QtWidgets.QFormLayout(tab_dim)
+        
         self.unit_combo = QtWidgets.QComboBox()
         self.unit_combo.addItems(["Pixels (px)", "Centimeters (cm)", "Inches (in)"])
-        geo_layout.addWidget(self.unit_combo, 0, 1)
-        
-        geo_layout.addWidget(QtWidgets.QLabel("Width:"), 1, 0)
         self.sb_w = QtWidgets.QDoubleSpinBox()
-        self.sb_w.setRange(1, 5000)
-        self.sb_w.setValue(current_w if current_w > 0 else 300)
-        geo_layout.addWidget(self.sb_w, 1, 1)
-        
-        geo_layout.addWidget(QtWidgets.QLabel("Height:"), 2, 0)
+        self.sb_w.setRange(1, 5000); self.sb_w.setValue(current_w if current_w > 0 else self.orig_image.width())
         self.sb_h = QtWidgets.QDoubleSpinBox()
-        self.sb_h.setRange(1, 5000)
-        self.sb_h.setValue(current_h if current_h > 0 else 300)
-        geo_layout.addWidget(self.sb_h, 2, 1)
+        self.sb_h.setRange(1, 5000); self.sb_h.setValue(current_h if current_h > 0 else self.orig_image.height())
+        self.cb_lock_ratio = QtWidgets.QCheckBox("Constrain Proportions")
+        self.cb_lock_ratio.setChecked(True)
         
-        layout.addWidget(geo_box)
+        self.combo_align = QtWidgets.QComboBox()
+        self.combo_align.addItems(["Left", "Center", "Right"])
         
-        crop_btn = QtWidgets.QPushButton("Crop 25% Margins Safely")
-        crop_btn.clicked.connect(self._execute_canvas_crop)
-        layout.addWidget(crop_btn)
+        self.sb_rotate = QtWidgets.QSpinBox()
+        self.sb_rotate.setRange(-360, 360); self.sb_rotate.setValue(0)
         
+        dim_layout.addRow("Unit System:", self.unit_combo)
+        dim_layout.addRow("Width:", self.sb_w)
+        dim_layout.addRow("Height:", self.sb_h)
+        dim_layout.addRow("", self.cb_lock_ratio)
+        dim_layout.addRow(QtWidgets.QLabel("<hr>"))
+        dim_layout.addRow("Page Alignment:", self.combo_align)
+        dim_layout.addRow("Rotation (°):", self.sb_rotate)
+        self.tabs.addTab(tab_dim, "📐 Size")
+        
+        # TAB 2: INTERACTIVE CROP
+        tab_crop = QtWidgets.QWidget()
+        crop_layout = QtWidgets.QVBoxLayout(tab_crop)
+        
+        lbl_crop = QtWidgets.QLabel("Use the visual cropper to draw a box perfectly around a face or object. You can enforce exact Passport sizes.")
+        lbl_crop.setWordWrap(True)
+        crop_layout.addWidget(lbl_crop)
+        
+        btn_open_crop = QtWidgets.QPushButton("✂️ Open Visual Cropper")
+        btn_open_crop.setStyleSheet("padding: 10px; font-size: 14px;")
+        btn_open_crop.clicked.connect(self._launch_visual_cropper)
+        crop_layout.addWidget(btn_open_crop)
+        crop_layout.addStretch()
+        
+        self.tabs.addTab(tab_crop, "✂️ Crop")
+
+        # TAB 3: Frame & Shadow
+        tab_border = QtWidgets.QWidget()
+        border_layout = QtWidgets.QFormLayout(tab_border)
+        
+        self.sb_border = QtWidgets.QSpinBox(); self.sb_border.setRange(0, 100); self.sb_border.setValue(0)
+        self.combo_border_style = QtWidgets.QComboBox()
+        self.combo_border_style.addItems(["Solid", "Dashed", "Dotted"])
+        self.sb_radius = QtWidgets.QSpinBox(); self.sb_radius.setRange(0, 500); self.sb_radius.setValue(0)
+        self.sb_padding = QtWidgets.QSpinBox(); self.sb_padding.setRange(0, 100); self.sb_padding.setValue(0)
+        
+        self.border_color = QtGui.QColor(Qt.GlobalColor.black)
+        self.btn_bcolor = QtWidgets.QPushButton("Choose Border Color")
+        self.btn_bcolor.clicked.connect(self._choose_border_color)
+
+        self.cb_shadow = QtWidgets.QCheckBox("Enable Drop Shadow")
+        self.sb_shadow_offset = QtWidgets.QSpinBox(); self.sb_shadow_offset.setRange(1, 50); self.sb_shadow_offset.setValue(10)
+        
+        border_layout.addRow("Thickness (px):", self.sb_border)
+        border_layout.addRow("Style:", self.combo_border_style)
+        border_layout.addRow("Corner Radius:", self.sb_radius)
+        border_layout.addRow("Inner Padding:", self.sb_padding)
+        border_layout.addRow("Border Color:", self.btn_bcolor)
+        border_layout.addRow(QtWidgets.QLabel("<hr>"))
+        border_layout.addRow("", self.cb_shadow)
+        border_layout.addRow("Shadow Offset:", self.sb_shadow_offset)
+        self.tabs.addTab(tab_border, "🔲 Frame")
+
+        # TAB 4: Filters & Adjustments
+        tab_fx = QtWidgets.QWidget()
+        fx_layout = QtWidgets.QFormLayout(tab_fx)
+        
+        self.slider_opacity = QtWidgets.QSlider(Qt.Orientation.Horizontal)
+        self.slider_opacity.setRange(10, 100); self.slider_opacity.setValue(100)
+        self.cb_grayscale = QtWidgets.QCheckBox("Convert to Black & White")
+        self.cb_sepia = QtWidgets.QCheckBox("Sepia Tone (Vintage)")
+        self.cb_flip_h = QtWidgets.QCheckBox("Mirror Horizontal")
+        
+        self.tint_color = QtGui.QColor(Qt.GlobalColor.transparent)
+        self.btn_tint = QtWidgets.QPushButton("Apply Color Tint (None)")
+        self.btn_tint.clicked.connect(self._choose_tint_color)
+        
+        fx_layout.addRow("Opacity (%):", self.slider_opacity)
+        fx_layout.addRow("", self.cb_grayscale)
+        fx_layout.addRow("", self.cb_sepia)
+        fx_layout.addRow("", self.cb_flip_h)
+        fx_layout.addRow(QtWidgets.QLabel("<hr>"))
+        fx_layout.addRow("Color Overlay:", self.btn_tint)
+        self.tabs.addTab(tab_fx, "✨ FX")
+
+        left_layout.addWidget(self.tabs)
+
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._finalize_and_accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        left_layout.addWidget(buttons)
+        main_layout.addWidget(left_panel, 1)
+
+        # --- RIGHT PANEL: LIVE PREVIEW ---
+        right_panel = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0,0,0,0)
         
+        self.lbl_preview = QtWidgets.QLabel("Loading Preview...")
+        self.lbl_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_preview.setStyleSheet("background-color: #e5e7eb; border: 1px dashed #9ca3af; border-radius: 8px; color: black;")
+        right_layout.addWidget(self.lbl_preview)
+        main_layout.addWidget(right_panel, 1)
+
+        # --- SIGNALS ---
         self.unit_combo.currentIndexChanged.connect(self._convert_measurement_units)
-        self.last_unit = 0
+        self.sb_w.valueChanged.connect(self._on_width_changed)
+        self.sb_h.valueChanged.connect(self._on_height_changed)
+        
+        for widget in [self.sb_border, self.sb_radius, self.sb_padding, self.sb_rotate, self.slider_opacity, self.sb_shadow_offset]:
+            widget.valueChanged.connect(self._update_preview)
+        
+        for widget in [self.cb_grayscale, self.cb_sepia, self.cb_flip_h, self.cb_shadow]:
+            widget.stateChanged.connect(self._update_preview)
+        
+        self.combo_border_style.currentIndexChanged.connect(self._update_preview)
+
+        self._update_preview()
+
+    def _launch_visual_cropper(self):
+        # Open the new tool passing the CURRENT image state
+        crop_tool = VisualCropDialog(self.orig_image, self)
+        if crop_tool.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            # Update our original image to the newly cropped one
+            self.orig_image = crop_tool.cropped_image
+            
+            # Recalculate aspect ratio based on new crop
+            self.orig_ratio = self.orig_image.width() / max(1, self.orig_image.height())
+            
+            # Auto-update the dimension boxes on Tab 1
+            self._updating_sizes = True
+            self.sb_w.setValue(self.orig_image.width())
+            self.sb_h.setValue(self.orig_image.height())
+            self.unit_combo.setCurrentIndex(0) # Reset to pixels
+            self._updating_sizes = False
+            
+            self._update_preview()
+
+    def _choose_border_color(self):
+        color = QtWidgets.QColorDialog.getColor(self.border_color, self, "Border Color")
+        if color.isValid():
+            self.border_color = color
+            self.btn_bcolor.setText(f"Color: {color.name()}")
+            self._update_preview()
+
+    def _choose_tint_color(self):
+        color = QtWidgets.QColorDialog.getColor(self.tint_color, self, "Tint Color", QtWidgets.QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        if color.isValid():
+            self.tint_color = color
+            self.btn_tint.setText(f"Tint: {color.name()}")
+            self._update_preview()
+
+    def _on_width_changed(self, val):
+        if self._updating_sizes or not self.cb_lock_ratio.isChecked(): return
+        self._updating_sizes = True; self.sb_h.setValue(val / self.orig_ratio); self._updating_sizes = False
+        self._update_preview()
+
+    def _on_height_changed(self, val):
+        if self._updating_sizes or not self.cb_lock_ratio.isChecked(): return
+        self._updating_sizes = True; self.sb_w.setValue(val * self.orig_ratio); self._updating_sizes = False
+        self._update_preview()
 
     def _convert_measurement_units(self, index):
+        self._updating_sizes = True
         w_px = self.sb_w.value()
         h_px = self.sb_h.value()
+        if self.last_unit == 1: w_px /= self.PX_TO_CM; h_px /= self.PX_TO_CM
+        elif self.last_unit == 2: w_px /= self.PX_TO_INCH; h_px /= self.PX_TO_INCH
+
+        if index == 0: self.sb_w.setValue(w_px); self.sb_h.setValue(h_px)
+        elif index == 1: self.sb_w.setValue(w_px * self.PX_TO_CM); self.sb_h.setValue(h_px * self.PX_TO_CM)
+        elif index == 2: self.sb_w.setValue(w_px * self.PX_TO_INCH); self.sb_h.setValue(h_px * self.PX_TO_INCH)
+        self.last_unit = index; self._updating_sizes = False
+
+    def _get_pixel_dimensions(self):
+        w = self.sb_w.value(); h = self.sb_h.value()
+        if self.last_unit == 1: w /= self.PX_TO_CM; h /= self.PX_TO_CM
+        elif self.last_unit == 2: w /= self.PX_TO_INCH; h /= self.PX_TO_INCH
+        return max(1, int(w)), max(1, int(h))
+
+    def _render_processed_pixmap(self, target_w, target_h):
+        if self.orig_image.isNull(): return QtGui.QPixmap()
         
-        if self.last_unit == 1: 
-            w_px /= self.PX_TO_CM
-            h_px /= self.PX_TO_CM
-        elif self.last_unit == 2: 
-            w_px /= self.PX_TO_INCH
-            h_px /= self.PX_TO_INCH
+        img = self.orig_image.copy()
 
-        if index == 0: 
-            self.sb_w.setValue(w_px)
-            self.sb_h.setValue(h_px)
-        elif index == 1: 
-            self.sb_w.setValue(w_px * self.PX_TO_CM)
-            self.sb_h.setValue(h_px * self.PX_TO_CM)
-        elif index == 2: 
-            self.sb_w.setValue(w_px * self.PX_TO_INCH)
-            self.sb_h.setValue(h_px * self.PX_TO_INCH)
+        # 2. Filters
+        if self.cb_grayscale.isChecked() or self.cb_sepia.isChecked():
+            img = img.convertToFormat(QtGui.QImage.Format.Format_Grayscale8)
+            img = img.convertToFormat(QtGui.QImage.Format.Format_ARGB32_Premultiplied)
             
-        self.last_unit = index
+        # 3. Transformations
+        transform = QtGui.QTransform()
+        if self.cb_flip_h.isChecked(): transform.scale(-1, 1)
+        transform.rotate(self.sb_rotate.value())
+        img = img.transformed(transform, Qt.TransformationMode.SmoothTransformation)
 
-    def _execute_canvas_crop(self):
-        pixmap = QtGui.QPixmap(self.img_path)
-        if not pixmap.isNull():
-            target_rect = QtCore.QRect(0, 0, int(pixmap.width() * 0.75), int(pixmap.height() * 0.75))
-            cropped = pixmap.copy(target_rect)
-            new_filename = self.img_path.replace(".", "_cropped.")
-            if cropped.save(new_filename):
-                self.cropped_path = new_filename
-                QtWidgets.QMessageBox.information(self, "Success", "Image cropped successfully layout.")
+        # 4. Scale inner image (Accounting for padding, border, and shadow)
+        pad = self.sb_padding.value()
+        border = self.sb_border.value()
+        shadow_offset = self.sb_shadow_offset.value() if self.cb_shadow.isChecked() else 0
+        
+        inner_w = max(1, target_w - (pad*2) - (border*2) - shadow_offset)
+        inner_h = max(1, target_h - (pad*2) - (border*2) - shadow_offset)
+        img = img.scaled(inner_w, inner_h, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+        # Create Canvas
+        final_pixmap = QtGui.QPixmap(target_w, target_h)
+        final_pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(final_pixmap)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+        painter.setOpacity(self.slider_opacity.value() / 100.0)
+
+        # Draw Elements
+        radius = self.sb_radius.value()
+        box_w = inner_w + (pad*2)
+        box_h = inner_h + (pad*2)
+        
+        # Drop Shadow
+        if self.cb_shadow.isChecked():
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QColor(0, 0, 0, 100)) # Semi-transparent black
+            painter.drawRoundedRect(shadow_offset, shadow_offset, box_w, box_h, radius, radius)
+
+        # Main Background (Padding area)
+        painter.setBrush(QtGui.QColor(Qt.GlobalColor.white))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(0, 0, box_w, box_h, radius, radius)
+
+        # Draw Image inside Padding
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(0, 0, box_w, box_h, radius, radius)
+        painter.setClipPath(path)
+        painter.drawImage(pad, pad, img)
+
+        # Filters Overlay (Sepia / Tint)
+        if self.cb_sepia.isChecked():
+            painter.fillRect(0, 0, box_w, box_h, QtGui.QColor(112, 66, 20, 70))
+        if self.tint_color.alpha() > 0:
+            painter.fillRect(0, 0, box_w, box_h, self.tint_color)
+
+        # Border
+        if border > 0:
+            painter.setClipping(False)
+            pen = QtGui.QPen(self.border_color)
+            pen.setWidth(border)
+            pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+            if self.combo_border_style.currentText() == "Dashed": pen.setStyle(Qt.PenStyle.DashLine)
+            elif self.combo_border_style.currentText() == "Dotted": pen.setStyle(Qt.PenStyle.DotLine)
+            else: pen.setStyle(Qt.PenStyle.SolidLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            half_t = border / 2.0
+            painter.drawRoundedRect(QtCore.QRectF(half_t, half_t, box_w - border, box_h - border), radius, radius)
+
+        painter.end()
+        return final_pixmap
+
+    def _update_preview(self):
+        actual_w, actual_h = self._get_pixel_dimensions()
+        
+        # Determine maximum bounding box for the UI preview area based on the new reduced height
+        preview_max = 380 
+        
+        ratio = min(preview_max / actual_w, preview_max / actual_h, 1.0)
+        simulated_w = max(1, int(actual_w * ratio))
+        simulated_h = max(1, int(actual_h * ratio))
+
+        preview_pixmap = self._render_processed_pixmap(simulated_w, simulated_h)
+        self.lbl_preview.setPixmap(preview_pixmap)
+
+    def _finalize_and_accept(self):
+        target_w, target_h = self._get_pixel_dimensions()
+        final_pixmap = self._render_processed_pixmap(target_w, target_h)
+        
+        dir_name = os.path.dirname(self.img_path)
+        unique_name = f"img_studio_{uuid.uuid4().hex[:8]}.png"
+        new_path = os.path.join(dir_name, unique_name)
+        
+        if final_pixmap.save(new_path, "PNG"):
+            self.modified_path = new_path
+            self.accept()
+        else:
+            QtWidgets.QMessageBox.critical(self, "Error", "Failed to save the processed image.")
 
     def get_results(self):
-        w = self.sb_w.value()
-        h = self.sb_h.value()
-        if self.last_unit == 1:
-            w /= self.PX_TO_CM; h /= self.PX_TO_CM
-        elif self.last_unit == 2:
-            w /= self.PX_TO_INCH; h /= self.PX_TO_INCH
-        return float(w), float(h), self.cropped_path
+        w, h = self._get_pixel_dimensions()
+        align = self.combo_align.currentText()
+        return float(w), float(h), self.modified_path, align
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
