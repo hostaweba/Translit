@@ -1,6 +1,6 @@
 # Translit - Complete Application Guide & Use Cases
 
-Translit is a professional, bilingual (Hindi/English) rich-text editor designed to eliminate the friction of typing in Devanagari while providing full word-processing capabilities. This guide covers every feature, how to use it, and real-world use cases.
+Translit is a professional, bilingual (Hindi/English) rich-text editor designed to eliminate the friction of typing in Devanagari while providing word-processing capabilities. This guide covers every feature, how to use it, and real-world use cases.
 
 ---
 
