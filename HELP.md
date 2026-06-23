@@ -1,160 +1,110 @@
-# Translit - Complete Application Guide & Use Cases
 
-Translit is a professional, bilingual (Hindi/English) rich-text editor designed to eliminate the friction of typing in Devanagari while providing word-processing capabilities. This guide covers every feature, how to use it, and real-world use cases.
+# Translit - Document Maker
 
----
+**Translit** is a professional, high-performance WYSIWYG rich-text editor built with PySide6. Designed specifically for bilingual (Hindi/English) workflows, it features real-time phonetic (ITRANS) to Devanagari transliteration, context-aware typing predictions, integrated voice typing, and an advanced templating system.
 
-## 1. Core Typing & Transliteration
-
-### Phonetic Typing (ITRANS)
-
-Type phonetically in Latin characters, and Translit will automatically convert it to Devanagari in real-time.
-
-* **Use Case:** Typing Hindi documents quickly without needing a specialized Hindi keyboard layout.
-* **Halant (Half-Letters):** Type a tilde `~` (or `0`) immediately after a letter to force a half-letter (e.g., `k~` becomes **क्**).
-
-### English / Hinglish Toggle (`Ctrl + Space`)
-
-Instantly pause the transliteration engine to type in standard English.
-
-* **Use Case:** Inserting English names, email addresses, technical terms, or URLs into a Hindi document. A badge in the bottom-right corner confirms your current mode.
-
-### Voice Typing (Speech-to-Text)
-
-Dictate text directly into the editor using your microphone.
-
-* **How to use:** Press and **hold `Ctrl + L**`. Speak your sentence in Hindi, then release the keys. The app will process the audio and insert the Devanagari text.
-* **Use Case:** Rapidly drafting long paragraphs, taking quick notes, or resting your hands during heavy typing sessions.
+With native DOCX and PDF export, a fully-featured Advanced Image Studio, highly customizable UI themes, and smart adaptive dictionaries, Translit bridges the gap between simple text editors and full-fledged office suites.
 
 ---
 
-## 2. Smart Suggestions & Vocabulary Building
+## 🌟 Key Features
 
-Translit predicts what you are typing and offers auto-completions to save keystrokes.
+### 🔠 Intelligent Typing & Transliteration
+* **Real-Time Transliteration:** Type phonetically in Latin (e.g., *kya* -> *क्या*) with instant conversion.
+* **AI Next-Word Predictions:** The editor learns your conversational flow and intelligently predicts the next word based on context.
+* **English/Hinglish Toggle:** Instantly switch between Hindi transliteration and standard English typing.
+* **In-Place Translation:** Highlight any English text and translate it directly to Hindi.
+* **Voice Typing (Speech-to-Text):** Hold a hotkey to dictate in Hindi directly into the editor.
 
-### Using the Suggestion UI
+### 📄 Professional Document Management
+* **Rich Format Support:** Open, edit, and save as native `.docx`, `.pdf`, `.html`, and `.txt`.
+* **Print & Page Layouts:** Switch between Web layout, Portrait (Canvas), and Landscape views for accurate print representation.
+* **Advanced Formatting:** Bold, italics, multi-style lists, superscript, subscript, text/highlight colors, and dynamic table insertions.
+* **Advanced Image Studio:** A built-in image processor featuring a drag-to-crop visual tool, exact pixel/cm/inch resizing, rounded corners, borders, drop shadows, rotation, and photo filters (Grayscale, Sepia, Invert, Tinting).
 
-You can display suggestions in an **Inline Popup** (under your cursor), a **Sidebar Dock**, or **Both** (configurable via the *View > Suggestion UI Mode* menu).
+### 🛠️ Advanced Tools & Automation
+* **Dictionary Training:** Manually train custom Latin-to-Devanagari mappings and shortcuts for specific vocabulary.
+* **Prediction Model & Vocabulary Scanners:** Extract unique words and bigrams (word pairs) from PDFs, Word files, and Spreadsheets (CSV/XLSX) to populate your custom AI memory.
+* **Template Manager:** Create, edit, and reuse HTML-based document templates (e.g., Question Papers, Applications, Declarations).
+* **Phrase Manager:** Save frequently used phrases or greetings and insert them instantly via a dedicated sidebar dock.
 
-* **Inline Popup:** Press `Up`/`Down` arrows to navigate, `Enter` or `Tab` to insert. Press `Ctrl + [1-9]` to instantly insert a numbered suggestion.
-* **Sidebar Dock:** Hold `Ctrl` and press `Up`/`Down` arrows to navigate the dock while typing. Press `Tab` to insert the selected dock word.
-
-### Suggestion Database Manager (Vocabulary Builder)
-
-Accessible via *Tools > Suggestion Database Manager*. This is where you manage the words Translit predicts.
-
-* **Document Scanner:** Click **Scan/Extract Words from File(s)** to bulk-import vocabulary. You can select PDF, DOCX, TXT, Excel (XLSX/CSV) files.
-* **Use Case:** If you are a legal typist or a teacher, scan your past documents. Translit will extract all unique words and add them to your suggestion database, instantly learning your specialized vocabulary.
-
----
-
-## 3. Custom Macros & Correction Dictionary
-
-Accessible via *Tools > Correction Dictionary* (`Ctrl + Shift + C`). This powerful tool lets you override the default transliteration engine.
-
-### Full-Word Shortcuts (Text Expanders)
-
-Map a lowercase Latin string to a specific Devanagari word or phrase.
-
-* **Rule:** Must be typed as an isolated word.
-* **Use Case:** Map `he` to `Mahatama Gandhi`. Map `.sig` to `भवदीय, आपका नाम`. This acts as a rapid text-expander for frequent phrases or hard-to-type names.
-
-### In-Word Modifiers
-
-Map an uppercase string or symbol to a specific phonetic output.
-
-* **Rule:** The engine will replace these characters *inside* of other words.
-* **Use Case:** Map `Ksh` to `क्ष्`. Typing `Kshatriya` will guarantee the word starts with the correct conjunct.
-
-### Context Menu Training
-
-* **How to use:** Highlight a wrongly transliterated word in the editor, right-click, and select **Train map from selection**. You will be prompted to enter the Latin shortcut you want to assign to that text.
+### 🎨 Customizable UI
+* **Chameleon Theme Engine:** Seamlessly toggle between Ultra-Compact Dark and Light modes with dynamically styled tabs and menus.
+* **Customizable Popups:** Tailor the suggestion popup's visual style (Classic, Modern, Neon, Google Search), grid layout, line spacing, and text colors.
+* **Productivity Timers:** Built-in status bar trackers monitor app uptime, active document session times, word counts, and cursor positions.
 
 ---
 
-## 4. Advanced Templating & Phrases
+## ⚙️ Requirements & Installation
 
-### Advanced Template Manager
+Translit requires **Python 3.8+**. It heavily relies on `PySide6` for the interface and uses several optional libraries to unlock its full potential.
 
-Accessible via the *File* toolbar icon or *Templates* menu. Translit supports reusable HTML-based document structures.
+### 1. Install Core Dependencies
 
-* **Features:** Insert templates, save your current editor canvas as a new template, preview HTML, or export/import your entire template library as a JSON file to share with colleagues.
-* **Use Case:** Creating standardized Question Papers, Leave Applications, Legal Declarations, or Office Memos without re-typing the layout every time.
+```bash
+pip install PySide6 indic-transliteration
 
-### Phrase Manager Dock
+```
 
-A sidebar dock displaying pre-saved text snippets.
+### 2. Install Feature-Specific Dependencies (Highly Recommended)
 
-* **How to use:** Double-click any phrase in the dock to instantly insert it at your cursor. Right-click the dock to Add, Edit, or Remove phrases.
-* **Use Case:** Storing standard greetings ("नमस्ते,"), sign-offs, or recurring boilerplate text.
+To enable all advanced features (DOCX export, Speech Recognition, PDF parsing, Excel scanning), install the following:
 
----
+```bash
+# For native DOCX saving and importing
+pip install python-docx
 
-## 5. Document Formatting & Layout
+# For Speech Recognition (requires PyAudio)
+pip install SpeechRecognition PyAudio
 
-### Visual Layout Modes
+# For parsing PDFs and Spreadsheets to train the AI & Dictionary
+pip install pypdf pandas openpyxl odfpy
 
-Change how the page looks via the *View > Page Layout View* menu.
+```
 
-* **Web Layout (Default):** Edge-to-edge typing, ideal for drafting and screen reading.
-* **Portrait / Landscape Canvas:** Simulates an actual physical page (like MS Word). It respects printer margins, making it perfect for visualizing how the document will look when printed.
+### 3. Run the Application
 
-### Rich Text Formatting
+```bash
+python main.py
 
-* **Tools:** Standard controls for Bold, Italic, Underline, Strikethrough, Subscript, Superscript, Text Color, and Background Highlight.
-* **Lists:** Bullet points and multi-style numbering (1,2,3... a,b,c... I,II,III...).
-* **Tables:** Insert tables, and use the right-click context menu inside a table to change its alignment (Left, Center, Right) on the page.
-* **Images:** Insert images with exact pixel widths and alignment controls.
+```
 
----
-
-## 6. Document Management & Export
-
-### Supported Formats
-
-* **Save/Open Native Formats:** Fully supports `.docx`, `.html`, `.txt`.
-* **Spreadsheet Import:** Open `.csv`, `.xlsx`, or `.ods` files to instantly render spreadsheet data as an editable HTML table inside your document.
-* **PDF Export:** Export your exact layout to `.pdf` via *File > Export as PDF*.
-
-### Safety & Tracking
-
-* **Autosave:** When creating a new file or saving for the first time, you are prompted to enable Autosave. Configure the interval via *Tools > Set Autosave Interval*.
-* **Productivity Timers:** The status bar tracks exactly how long the app has been open ("App") and how long you've spent actively editing the current document ("Doc").
+*(Replace `main.py` with the actual filename of your script).*
 
 ---
 
-## 7. UI Customization & Themes
-
-### Dark Mode / Light Mode (`Ctrl + D`)
-
-Instantly toggle between an ultra-compact Dark Theme (gentle on the eyes) and a crisp Light Theme.
-
-### Suggestion Popup Design
-
-Accessible via *View > Suggestion Popup Settings*. Completely customize the look of the autocomplete menu.
-
-* **Visual Themes:** Choose from OS Native, Classic, Modern, Minimalist, Neon, or Google Search style.
-* **Grid Layout:** Transform the vertical list into a multi-column grid by setting exact row and column counts.
-* **Typography:** Change font size, text color, bold formatting, line spacing, and toggle the visibility of shortcut numbers `[1]`, `[2]`.
-
----
-
-## Master Keyboard Shortcuts Cheat Sheet
+## ⌨️ Keyboard Shortcuts
 
 | Shortcut | Action |
 | --- | --- |
 | **`Ctrl` + `Space`** | Toggle English (Hinglish) / Hindi Transliteration mode |
-| **Hold `Ctrl` + `L`** | Activate Speech-to-Text (Voice Typing) |
+| Hold **`Ctrl` + `L`** | Activate Speech-to-Text (Voice Typing) |
 | **`Ctrl` + `T`** | Toggle Transliteration Engine ON/OFF completely |
 | **`Ctrl` + `D`** | Toggle Dark / Light Theme |
-| **`Ctrl` + `Shift` + `C`** | Open Correction Dictionary Manager |
-| **`Ctrl` + `Shift` + `D`** | Insert Current Date/Time |
-| **`Ctrl` + `1-9, 0`** | Insert the corresponding numbered suggestion from the inline popup |
-| **`Ctrl` + `↑` / `↓`** | Navigate the suggestion list in the Sidebar Dock |
-| **`Tab`** | Insert the currently selected suggestion (Inline or Dock) |
 | **`Ctrl` + `N` / `O` / `S`** | New, Open, Save Document |
-| **`Ctrl` + `P`** | Open Print Preview |
+| **`Ctrl` + `P`** | Open Print / PDF Export Preview |
 | **`Ctrl` + `F`** | Find and Replace |
-| **`Ctrl` + `B` / `I` / `U`** | Bold, Italic, Underline |
-| **`Ctrl` + `=`** | Subscript (X₂) |
-| **`Ctrl` + `Shift` + `+`** | Superscript (X²) |
+| **`Ctrl` + `Shift` + `C`** | Open Correction Dictionary Manager |
+| **`Ctrl` + `Shift` + `E`** | Translate Selected Text to Hindi |
+| **`Ctrl` + `Shift` + `D`** | Insert Current Date/Time |
+| **`Alt` + `P`** | Focus the Phrases Sidebar |
+| **`Ctrl` + `1-9, 0`** | Insert the corresponding numbered suggestion from the popup |
+| **`Ctrl` + `↑` / `↓`** | Navigate the suggestion list in the Sidebar Dock |
+| **`Tab`** | Insert the selected suggestion (Dock or Inline) |
+
+---
+
+## 📂 User Data Directory
+
+Translit automatically saves user preferences, custom dictionaries, AI prediction models, phrases, and templates in the standard application data folder for your OS.
+
+* **Windows:** `C:\Users\<User>\AppData\Roaming\.hindi_office_wysiwyg\`
+* **macOS / Linux:** `~/.hindi_office_wysiwyg/`
+
+**Generated JSON files include:**
+
+* `user_translit.json` (Your custom typing mappings & macros)
+* `suggestions.json` (Your extracted autocomplete vocabulary)
+* `next_words.json` (Your AI predictive flow model)
+* `phrases.json` (Quick-insert text snippets)
+* `templates.json` (Saved HTML document templates)
