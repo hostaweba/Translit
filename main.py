@@ -5,76 +5,42 @@ Translit - Document Maker
 Professional, high-performance editor with Native DOCX, PDF Export, Print Layout, Page Setup, Advanced Templates, and AI Typing Predictions.
 """
 
-from __future__ import annotations
-
-import json
-import logging
-import os
-import re
-import sys
-import tempfile
-import difflib
-import math
+from typing import Optional
+import json, logging, os, re, sys, tempfile, difflib, math, uuid
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
+import urllib.request
+import urllib.parse
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtGui import QIcon, QTextCharFormat, QFont, QPixmap, QImage, QPainter, QPen, QColor, QTransform, QPainterPath
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog, QPageSetupDialog
 
-import urllib.request
-import urllib.parse
-import uuid
-
-
-
-# --- LOCAL MODULE IMPORTS ---
 import templates
 import style
 import splash
+import spreadsheet
+
+from PIL import Image, ImageEnhance, ImageFilter
+from PIL.ImageQt import ImageQt
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-# Dependencies
-try:
-    from indic_transliteration.sanscript import transliterate  # type: ignore
-    HAS_TRANSLIT = True
-except Exception:
-    transliterate = None
-    HAS_TRANSLIT = False
+# Initialize dependency flags globally so your classes don't break
+HAS_TRANSLIT = False
+HAS_DOCX = False
+HAS_PANDAS = False
+HAS_SR = False
+HAS_PDF = False
+HAS_PIL = False
+transliterate = None
+docx = None
+pd = None
+sr = None
+pypdf = None
 
-try:
-    import docx
-    from docx.shared import Pt, RGBColor, Inches
-    from docx.enum.text import WD_COLOR_INDEX, WD_ALIGN_PARAGRAPH
-    from docx.enum.table import WD_TABLE_ALIGNMENT
-    HAS_DOCX = True
-except Exception:
-    docx = None
-    HAS_DOCX = False
-
-try:
-    import pandas as pd
-    HAS_PANDAS = True
-except Exception:
-    pd = None
-    HAS_PANDAS = False
-
-try:
-    import speech_recognition as sr  # type: ignore
-    HAS_SR = True
-except Exception:
-    sr = None
-    HAS_SR = False
-
-try:
-    import pypdf
-    HAS_PDF = True
-except Exception:
-    pypdf = None
-    HAS_PDF = False
 
 APP_NAME = "Translit"
 USER_DIR = Path(
@@ -89,23 +55,96 @@ TEMPLATES_PATH = USER_DIR / "templates.json"
 NEXT_WORDS_PATH = USER_DIR / "next_words.json"
 
 DEFAULT_PHRASES = [
-    "नमस्ते,\nआशा है आप स्वस्थ हैं।",
-    "धन्यवाद,\n[आपका नाम]",
-    "सादर,\n[आपका नाम]\n[पद]",
+    # Application Phrases
+    "सविनय निवेदन है कि",                   
+    "अतः आपसे विनम्र निवेदन है कि",         
+    "सधन्यवाद",                                 
+    "भवदीय",                                  
+    
+    # Declaration Phrases
+    "मैं एतद्द्वारा घोषणा करता हूँ कि",              
+    "मेरी सर्वोत्तम जानकारी और विश्वास के अनुसार",   
+    "उपरोक्त दी गई सभी जानकारी सत्य है",        
+    
+    # Question Paper Phrases
+    "सभी प्रश्न अनिवार्य हैं",                    
+    "संक्षेप में उत्तर दें",                         
+    "प्रत्येक प्रश्न के अंक उसके सामने अंकित हैं",     
+    
+    # Official Orders & Notices
+    "सूचनार्थ एवं आवश्यक कार्यवाही हेतु",          
+    "तत्काल प्रभाव से",                        
+    "कड़ाई से पालन किया जाए",              
+    "आदेशानुसार"                               
 ]
 
 DEFAULT_DICT = {
-    "yahan": "यहाँ", "yah": "यह", "rha": "रहा", "narkhi": "नारखी",
-    "kya": "क्या", "koko": "कोमल", "karne": "करने", "hi": "हाय",
-    "hemlata": "हेमलता", "hello": "हेलो", "han": "हाँ", "etah": "एटा",
-    "dr.": "डॉ.", "aj": "आज", "main": "मैं", "hoon": "हूँ", "aur": "और",
-    "ki": "कि", "kee": "की", "hota": "होता", "hoti": "होती", "hote": "होते",
-    "bahut": "बहुत", "Ri": "ऋ", "R": "ृ", "O": "ॉ", "M": "ँ", "H": "ः",
-    "^": "ं", "*": ".", "!": "ॠ", "Aum": "ॐ", "Z": "़",
-    "Gy": "ज्ञ्", "Ksh": "क्ष्", "Tr": "त्र्", "Shr": "श्र्",
-    "Dhy": "ध्य्", "Dy": "द्य्", "Tt": "ट्ट्", "Dd": "ड्ड्", "Tth": "ट्ठ्",
-    "Ru": "रु", "Roo": "रू"
+    # Special Characters & Numbers
+    "!": "ॠ",
+    "*": ".",
+    "**": "०",
+    "0": "~",
+    "^": "ं",
+
+    # Uppercase / Proper Nouns / Months / Specific Conjuncts
+    "Aum": "ॐ",
+    "Dhy": "ध्य्",
+    "Dy": "द्य्",
+    "Eapr": "अप्रैल",
+    "Eaug": "अगस्त",
+    "Edec": "दिसंबर",
+    "Efeb": "फरवरी",
+    "Ejan": "जनवरी",
+    "Ejul": "जुलाई",
+    "Ejun": "जून",
+    "Emar": "मार्च",
+    "Emay": "मई",
+    "Enov": "नवंबर",
+    "Eoct": "अक्टूबर",
+    "Esep": "सितंबर",
+    "Gy": "ज्ञ्",
+    "Gya": "ज्ञ",
+    "H": "ः",
+    "Ksh": "क्ष्",
+    "M": "ँ",
+    "O": "ॉ",
+    "R": "ृ",
+    "Ri": "ऋ",
+    "Z": "़",
+
+    # Lowercase Words
+    "acha": "अच्छा",
+    "aj": "आज",
+    "aur": "और",
+    "bahut": "बहुत",
+    "dr.": "डॉ.",
+    "etah": "एटा",
+    "gaon": "गाँव",
+    "han": "हाँ",
+    "hello": "हेलो",
+    "hi": "हाय",
+    "hoon": "हूँ",
+    "hoon,": "हूँ,",
+    "hoon.": "हूँ|",
+    "hota": "होता",
+    "hote": "होते",
+    "hoti": "होती",
+    "karna": "करना",
+    "karne": "करने",
+    "kee": "की",
+    "ki": "कि",
+    "koko": "कोमल",
+    "kya": "क्या",
+    "main": "मैं",
+    "mein": "में",
+    "narkhi": "नारखी",
+    "nhi": "नहीं",
+    "rha": "रहा",
+    "sath": "साथ",
+    "yah": "यह",
+    "yahan": "यहाँ"
 }
+
 
 def save_json_atomically(data: dict | list, filepath: Path) -> bool:
     tmp_path = filepath.with_suffix('.tmp')
@@ -349,6 +388,14 @@ def export_native_to_docx(qdoc: QtGui.QTextDocument, filepath: str, progress_cal
                     img_fmt = fmt.toImageFormat()
                     img_name = img_fmt.name()
                     img = qdoc.resource(QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(img_name))
+                    
+                    # ------
+                    if img is None or img.isNull():
+                        local_path = QtCore.QUrl(img_name).toLocalFile() if img_name.startswith("file://") else img_name
+                        if os.path.exists(local_path):
+                            img = QtGui.QImage(local_path)
+                    # ------------------------------------
+                    
                     if img and not img.isNull():
                         fd, tmp = tempfile.mkstemp(suffix=".png")
                         os.close(fd) 
@@ -472,7 +519,8 @@ class TemplateManagerDialog(QtWidgets.QDialog):
         left_v.addWidget(self.list_widget)
         
         self.btn_insert = QtWidgets.QPushButton("Insert to Editor")
-        self.btn_insert.setStyleSheet("background-color: #10b981; color: white; font-weight:bold;")
+        # Change from #10b981 to rgba
+        self.btn_insert.setStyleSheet("background-color: rgba(4, 120, 87, 0.7); color: white; font-weight:bold;")
         self.btn_add_current = QtWidgets.QPushButton("Save Editor as Template")
         self.btn_delete = QtWidgets.QPushButton("Delete Selected")
         left_v.addWidget(self.btn_insert)
@@ -638,20 +686,31 @@ class FileScannerThread(QtCore.QThread):
                 
                 if ext == "txt":
                     with open(path, "r", encoding="utf-8") as f: full_text = f.read()
-                elif ext == "docx" and HAS_DOCX:
+                elif ext == "docx":
+                    if not HAS_DOCX: 
+                        raise Exception("Missing library for DOCX. Open terminal and run: pip install python-docx")
                     doc = docx.Document(path)
                     full_text = " ".join([p.text for p in doc.paragraphs])
-                elif ext == "pdf" and HAS_PDF:
+                elif ext == "pdf":
+                    if not HAS_PDF: 
+                        raise Exception("Missing library for PDF. Open terminal and run: pip install pypdf")
+                    
                     with open(path, "rb") as f:
                         reader = pypdf.PdfReader(f)
                         full_text = " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
+                    
+                    # Warn the user if the PDF is just scanned images and contains no actual text data
+                    if not full_text.strip():
+                        raise Exception(f"No readable text found in {os.path.basename(path)}. It might be a scanned image or have locked fonts.")
+                        
                 elif ext in ["csv", "xlsx", "ods"]:
-                    if HAS_PANDAS:
-                        if ext == "xlsx": df = pd.read_excel(path, engine="openpyxl")
-                        elif ext == "ods": df = pd.read_excel(path, engine="odf")
-                        else: df = pd.read_csv(path)
-                        df = df.fillna("") 
-                        full_text = " ".join([str(val) for val in df.values.flatten() if str(val).strip()])
+                    if not HAS_PANDAS: 
+                        raise Exception("Missing library for Spreadsheets. Open terminal and run: pip install pandas openpyxl")
+                    if ext == "xlsx": df = pd.read_excel(path, engine="openpyxl")
+                    elif ext == "ods": df = pd.read_excel(path, engine="odf")
+                    else: df = pd.read_csv(path)
+                    df = df.fillna("") 
+                    full_text = " ".join([str(val) for val in df.values.flatten() if str(val).strip()])
 
                 if full_text:
                     words = [w for w in re.findall(r'[a-zA-Z]+|[\u0900-\u097F]+', full_text) if len(w) > 1]
@@ -667,6 +726,7 @@ class FileScannerThread(QtCore.QThread):
                 self.finished_bigrams.emit(extracted_bigrams)
                 
         except Exception as e:
+            # This will now pop up a visible error box in the UI!
             self.error.emit(str(e))
 
 class FuzzySearchThread(QtCore.QThread):
@@ -725,7 +785,8 @@ class SuggestionsManagerDialog(QtWidgets.QDialog):
 
         btns_bot = QtWidgets.QHBoxLayout()
         self.btn_scan = QtWidgets.QPushButton("Scan/Extract Words from File(s)...")
-        self.btn_scan.setStyleSheet("background-color: #10b981; color: white; font-weight: bold;")
+        # Change from #10b981 to rgba
+        self.btn_scan.setStyleSheet("background-color: rgba(4, 120, 87, 0.7); color: white; font-weight: bold;")
         self.btn_close = QtWidgets.QPushButton("Close")
         btns_bot.addWidget(self.btn_scan)
         btns_bot.addStretch()
@@ -838,7 +899,7 @@ class SuggestionsManagerDialog(QtWidgets.QDialog):
 class PredictionManagerDialog(QtWidgets.QDialog):
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("AI Prediction Model Manager")
+        self.setWindowTitle("Prediction Model Manager")
         self.resize(800, 600)
         self.state = state
 
@@ -868,7 +929,8 @@ class PredictionManagerDialog(QtWidgets.QDialog):
 
         btns_bot = QtWidgets.QHBoxLayout()
         self.btn_scan = QtWidgets.QPushButton("Scan/Extract Conversational Flow from File(s)...")
-        self.btn_scan.setStyleSheet("background-color: #3b82f6; color: white; font-weight: bold; padding: 8px;")
+        # Change from #10b981 to rgba
+        self.btn_scan.setStyleSheet("background-color: rgba(4, 120, 87, 0.7); color: white; font-weight: bold;")
         self.btn_close = QtWidgets.QPushButton("Close")
         
         btns_bot.addWidget(self.btn_scan)
@@ -925,7 +987,8 @@ class PredictionManagerDialog(QtWidgets.QDialog):
             target_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Prediction Model", "", "JSON Files (*.json)")
             if not target_path: return
             
-        if self.state.save_next_words(target_path):
+        # FIX: Cast the string path to a Path object here
+        if self.state.save_next_words(Path(target_path)):
             self.state.active_pred_name = os.path.basename(str(target_path))
             self.lbl_info.setText(f"<b>Active Model:</b> {self.state.active_pred_name} | <b>Total Connections:</b> {self._get_total_connections()}")
             QtWidgets.QMessageBox.information(self, "Saved", f"Model saved successfully to: {target_path}")
@@ -978,9 +1041,124 @@ class PredictionManagerDialog(QtWidgets.QDialog):
         self.btn_scan.setText("Scan/Extract Conversational Flow from File(s)...")
         QtWidgets.QMessageBox.information(self, "Scan Complete", f"Successfully analyzed files and learned {len(extracted_bigrams)} context pairs.")
 
+class PhraseManagerDialog(QtWidgets.QDialog):
+    def __init__(self, state: AppState, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Phrase Database Manager")
+        self.resize(750, 500)
+        self.state = state
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self.lbl_info = QtWidgets.QLabel(f"<b>Total Phrases:</b> {len(self.state.phrases)}")
+        self.lbl_info.setStyleSheet("font-size: 14px; padding: 5px;")
+        layout.addWidget(self.lbl_info)
+
+        self.list_widget = QtWidgets.QListWidget()
+        self.list_widget.addItems(self.state.phrases)
+        layout.addWidget(self.list_widget)
+
+        btns_top = QtWidgets.QHBoxLayout()
+        self.btn_add = QtWidgets.QPushButton("Add Phrase")
+        self.btn_edit = QtWidgets.QPushButton("Edit Selected")
+        self.btn_remove = QtWidgets.QPushButton("Remove Selected")
+        self.btn_apply = QtWidgets.QPushButton("Apply (runtime)")
+        btns_top.addWidget(self.btn_add)
+        btns_top.addWidget(self.btn_edit)
+        btns_top.addWidget(self.btn_remove)
+        btns_top.addWidget(self.btn_apply)
+        layout.addLayout(btns_top)
+
+        btns_mid = QtWidgets.QHBoxLayout()
+        self.btn_load_def = QtWidgets.QPushButton("Load Default")
+        self.btn_save_def = QtWidgets.QPushButton("Save Default")
+        self.btn_load_man = QtWidgets.QPushButton("Load Manual File...")
+        self.btn_save_man = QtWidgets.QPushButton("Save Manual File...")
+        btns_mid.addWidget(self.btn_load_def)
+        btns_mid.addWidget(self.btn_save_def)
+        btns_mid.addWidget(self.btn_load_man)
+        btns_mid.addWidget(self.btn_save_man)
+        layout.addLayout(btns_mid)
+
+        self.btn_close = QtWidgets.QPushButton("Close")
+        layout.addWidget(self.btn_close, alignment=Qt.AlignmentFlag.AlignRight)
+
+        # Connections
+        self.btn_add.clicked.connect(self.add_phrase)
+        self.btn_edit.clicked.connect(self.edit_phrase)
+        self.btn_remove.clicked.connect(self.remove_phrase)
+        self.btn_apply.clicked.connect(self.apply_runtime)
+        self.btn_load_def.clicked.connect(self.load_default)
+        self.btn_save_def.clicked.connect(lambda: self.save_to_file(PHRASES_PATH))
+        self.btn_load_man.clicked.connect(self.load_manual)
+        self.btn_save_man.clicked.connect(lambda: self.save_to_file(None))
+        self.btn_close.clicked.connect(self.accept)
+
+    def update_label(self):
+        self.lbl_info.setText(f"<b>Total Phrases:</b> {self.list_widget.count()}")
+
+    def add_phrase(self):
+        txt, ok = QtWidgets.QInputDialog.getMultiLineText(self, "Add Phrase", "Enter new phrase:")
+        if ok and txt.strip():
+            self.list_widget.addItem(txt.strip())
+            self.update_label()
+
+    def edit_phrase(self):
+        item = self.list_widget.currentItem()
+        if item:
+            txt, ok = QtWidgets.QInputDialog.getMultiLineText(self, "Edit Phrase", "Edit phrase:", item.text())
+            if ok and txt.strip():
+                item.setText(txt.strip())
+
+    def remove_phrase(self):
+        row = self.list_widget.currentRow()
+        if row >= 0:
+            self.list_widget.takeItem(row)
+            self.update_label()
+
+    def apply_runtime(self):
+        self.state.phrases = [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
+        self.update_label()
+        QtWidgets.QMessageBox.information(self, "Applied", "Phrases applied to runtime memory.")
+
+    def save_to_file(self, target_path=None):
+        if not target_path:
+            target_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Phrases", "", "JSON Files (*.json)")
+            if not target_path: return
+        self.apply_runtime()
+        try:
+            with open(target_path, "w", encoding="utf-8") as f:
+                json.dump(self.state.phrases, f, ensure_ascii=False, indent=2)
+            QtWidgets.QMessageBox.information(self, "Saved", f"Saved successfully to: {target_path}")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Save failed", str(e))
+
+    def load_default(self):
+        if PHRASES_PATH.exists():
+            try:
+                with open(PHRASES_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self.list_widget.clear()
+                    self.list_widget.addItems(data)
+                    self.apply_runtime()
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Load failed", str(e))
+
+    def load_manual(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Manual Phrases", "", "JSON Files (*.json)")
+        if path:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self.list_widget.clear()
+                    self.list_widget.addItems(data)
+                    self.apply_runtime()
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Error", str(e))
 
 class CorrectionsDialog(QtWidgets.QDialog):
-    def __init__(self, state: AppState, editor_ref: Optional[QtWidgets.QTextEdit] = None, parent=None):
+    def __init__(self, state: AppState, editor_ref: QtWidgets.QTextEdit | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Dictionary Training & File Scanner")
         self.resize(950, 650)
@@ -1016,7 +1194,8 @@ class CorrectionsDialog(QtWidgets.QDialog):
 
         btns_bot = QtWidgets.QHBoxLayout()
         self.btn_scan = QtWidgets.QPushButton("Scan/Extract Words from File(s)...")
-        self.btn_scan.setStyleSheet("background-color: #10b981; color: white; font-weight: bold;")
+        # Change from #10b981 to rgba
+        self.btn_scan.setStyleSheet("background-color: rgba(4, 120, 87, 0.7); color: white; font-weight: bold;")
         self.btn_apply_sel = QtWidgets.QPushButton("Apply mapping to selection")
         self.btn_close = QtWidgets.QPushButton("Close")
         btns_bot.addWidget(self.btn_scan)
@@ -1131,10 +1310,17 @@ class CorrectionsDialog(QtWidgets.QDialog):
     def _on_scan_finished(self, extracted_words: set):
         existing_words = set()
         for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            if item and item.text().strip(): existing_words.add(item.text().strip().lower())
+            # Check BOTH Latin and Devanagari columns for duplicates!
+            item_latin = self.table.item(r, 0)
+            item_dev = self.table.item(r, 1)
+            
+            if item_latin and item_latin.text().strip(): 
+                existing_words.add(item_latin.text().strip().lower())
+            if item_dev and item_dev.text().strip(): 
+                existing_words.add(item_dev.text().strip().lower())
 
         added = 0
+        
         self.table.setSortingEnabled(False)
         for w in extracted_words:
             w_lower = w.lower()
@@ -1271,6 +1457,48 @@ class HindiEditor(QtWidgets.QTextEdit):
     suggestionsReady = QtCore.Signal(list)
     navigateSuggestion = QtCore.Signal(int)
     insertSuggestionTrigger = QtCore.Signal()
+
+
+    def paintEvent(self, event):
+            # 1. Let the system draw the text and primary background first
+            super().paintEvent(event)
+            
+            # 2. Only draw physical gaps in Portrait or Landscape layout modes
+            if self.state.view_mode == "Web":
+                return
+
+            painter = QtGui.QPainter(self.viewport())
+            is_dark = getattr(self.window(), 'dark_mode_enabled', False)
+
+            # Style the physical gap boundaries
+            gap_color = QtGui.QColor("#0f172a") if is_dark else QtGui.QColor("#e5e7eb")
+            border_color = QtGui.QColor("#4b5563") if is_dark else QtGui.QColor("#9ca3af")
+            
+            doc = self.document()
+            page_h = int(doc.pageSize().height())
+            if page_h <= 0: 
+                return
+
+            v_scroll = self.verticalScrollBar().value()
+            page_count = doc.pageCount()
+            gap_height = 24  # Size of the physical gray gap between A4 pages
+
+            # 3. Draw a gray block over the boundaries to separate pages visually
+            for i in range(1, page_count):
+                y_pos = (i * page_h) - v_scroll - gap_height
+                
+                # Skip if rendering is out of viewport (Performance saver)
+                if y_pos > self.viewport().height() or y_pos + gap_height < 0:
+                    continue 
+
+                rect = QtCore.QRect(0, y_pos, self.viewport().width(), gap_height)
+                painter.fillRect(rect, gap_color)
+                
+                painter.setPen(border_color)
+                painter.drawLine(0, y_pos, self.viewport().width(), y_pos)
+                painter.drawLine(0, y_pos + gap_height, self.viewport().width(), y_pos + gap_height)
+                
+            painter.end()
 
     def __init__(self, translit: AdaptiveTransliterator, state: AppState, parent=None):
         super().__init__(parent)
@@ -1547,6 +1775,39 @@ class HindiEditor(QtWidgets.QTextEdit):
 
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if self._composing_latin: self._commit_composing()
+            
+            # --- SMART HINDI AUTO-LIST LOGIC ---
+            cur = self.textCursor()
+            block_text = cur.block().text()
+            
+            # Regex to detect lines starting with: क. | क). | (क).
+            match = re.match(r"^(\(?)?([कखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह])(\)\.|\.)\s+(.*)", block_text)
+            
+            if match:
+                prefix = match.group(1) or ""
+                char = match.group(2)
+                suffix = match.group(3)
+                content = match.group(4)
+                
+                # If you press Enter on an empty list item, cancel the list (mimics MS Word)
+                if not content.strip():
+                    cur.select(QtGui.QTextCursor.SelectionType.BlockUnderCursor)
+                    cur.removeSelectedText()
+                    return super().keyPressEvent(ev)
+                    
+                # Find the next logical Hindi consonant in the array
+                hindi_chars = "कखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह"
+                idx = hindi_chars.find(char)
+                
+                if idx != -1 and idx + 1 < len(hindi_chars):
+                    next_char = hindi_chars[idx + 1]
+                    
+                    # Trigger the normal line break, then insert the new auto-calculated bullet
+                    super().keyPressEvent(ev)
+                    self.insertPlainText(f"{prefix}{next_char}{suffix} ")
+                    return
+            # -----------------------------------
+            
             return super().keyPressEvent(ev)
 
         txt = ev.text()
@@ -1716,7 +1977,7 @@ class HindiEditor(QtWidgets.QTextEdit):
         if is_dark:
             menu.setStyleSheet("""
                 QMenu { background-color: #1f2937; color: #f9fafb; border: 1px solid #4b5563; padding: 4px; }
-                QMenu::item:selected { background-color: #059669; }
+                QMenu::item:selected { background-color: rgba(4, 120, 87, 0.6); border-radius: 3px; }
                 QMenu::separator { background-color: #4b5563; height: 1px; margin: 4px 0px; }
             """)
         else:
@@ -1792,8 +2053,12 @@ class HindiEditor(QtWidgets.QTextEdit):
                 a_all.triggered.connect(lambda checked=False: self.contextActionTriggered.emit("context_correct_all"))
                 
             menu.addSeparator()
+            translate_en_action = menu.addAction("Translate Selection to English")
+            translate_en_action.triggered.connect(lambda checked=False: self.contextActionTriggered.emit("context_translate_en"))            
+            
             translate_action = menu.addAction("Translate Selection to Hindi")
             translate_action.triggered.connect(lambda checked=False: self.contextActionTriggered.emit("context_translate"))
+            
 
 
         # Render menu
@@ -1825,6 +2090,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.state.load()
         
         self.current_filepath: str | None = None
+        
+        
         
         self.settings = QtCore.QSettings("TranslitStudio", "TranslitDocMaker")
         self.dark_mode_enabled = self.settings.value("dark_mode", True, type=bool)
@@ -1878,6 +2145,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.editor = HindiEditor(self.translit, self.state, self)
         
+        # [NEW] Disable internal scrollbars to mimic MS Word
+        self.editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # [NEW] Force text to wrap at the exact edge of the paper
+        self.editor.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.WidgetWidth)
+        self.editor.setWordWrapMode(QtGui.QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        
+        # [NEW] Dynamically grow the paper height as we type
+        self.editor.document().documentLayout().documentSizeChanged.connect(self._adjust_editor_height)
+        
         # Safe localized event filter
         self.editor.installEventFilter(self)
         
@@ -1885,11 +2163,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas_layout.addWidget(self.page_frame)
         
         self.workspace_scroll.setWidget(self.canvas_container)
-        self.setCentralWidget(self.workspace_scroll)
+        
+        # ------------------
+        # 3. NOW create the Stacked Widget and add everything to it
+        self.main_stack = QtWidgets.QStackedWidget()
+        
+        # Index 0: Document Editor (This needs self.workspace_scroll to exist!)
+        self.main_stack.addWidget(self.workspace_scroll) 
+        
+        # Index 1: Spreadsheet Editor
+        # Pass self.translit and self.state into the module
+        self.spreadsheet_view = spreadsheet.SpreadsheetWidget(self.translit, self.state, self)
+        self.main_stack.addWidget(self.spreadsheet_view)
+        
+        # 4. Set the stack as the central widget
+        self.setCentralWidget(self.main_stack)
         
         self.workspace_scroll.verticalScrollBar().valueChanged.connect(lambda _: self.editor.sugg_popup.hide())
         self.workspace_scroll.horizontalScrollBar().valueChanged.connect(lambda _: self.editor.sugg_popup.hide())
-
 
         self.editor.cursorPositionChanged.connect(self._ensure_cursor_visible)
 
@@ -1925,6 +2216,119 @@ class MainWindow(QtWidgets.QMainWindow):
         
         QTimer.singleShot(0, lambda: self._new_file(prompt_autosave=False, is_startup=True))
 
+    def closeEvent(self, event):
+        """Prompt to save before the application closes if there are unsaved changes."""
+        if self.is_dirty:
+            reply = QtWidgets.QMessageBox.question(
+                self, "Unsaved Changes",
+                "You have unsaved changes. Do you want to save before exiting?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No | QtWidgets.QMessageBox.StandardButton.Cancel
+            )
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                self._save_manual()
+                if self.is_dirty: # If save failed or was canceled
+                    event.ignore()
+                    return
+            elif reply == QtWidgets.QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+        event.accept()
+
+    def _new_spreadsheet(self):
+        if self.is_dirty:
+            reply = QtWidgets.QMessageBox.question(
+                self, "Save Current Work?", "Do you want to save your current work before starting a new spreadsheet?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No | QtWidgets.QMessageBox.StandardButton.Cancel
+            )
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes: self._save_manual()
+            elif reply == QtWidgets.QMessageBox.StandardButton.Cancel: return
+
+        self.act_view_sheet.setChecked(True)
+        self._toggle_spreadsheet_mode(True)
+        self.spreadsheet_view.table.clearContents()
+        self.current_filepath = None
+        self.is_dirty = False
+        self.autosave_enabled = False
+        self.autosave_timer.stop()
+        
+        # Prompt for Autosave
+        msg = QtWidgets.QMessageBox(self)
+        msg.setWindowTitle("Enable Autosave")
+        msg.setText("Would you like to save this new spreadsheet now to enable continuous auto-saving?")
+        btn_save = msg.addButton("Save Now", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        btn_later = msg.addButton("Later", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+        if msg.clickedButton() == btn_save:
+            self._save_spreadsheet()
+
+    def _open_spreadsheet(self):
+        if self.is_dirty:
+            reply = QtWidgets.QMessageBox.question(
+                self, "Save Current Work?", "Save current work before opening a new file?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No | QtWidgets.QMessageBox.StandardButton.Cancel
+            )
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes: self._save_manual()
+            elif reply == QtWidgets.QMessageBox.StandardButton.Cancel: return
+
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open Spreadsheet", "", "Spreadsheets (*.xls *.xlsx *.csv *.ods);;All Files (*.*)")
+        if path:
+            self.act_view_sheet.setChecked(True)
+            self._toggle_spreadsheet_mode(True)
+            self.spreadsheet_view.load_file(path)
+            self.current_filepath = path
+            self.is_dirty = False
+            
+            # Re-enable Autosave
+            self.autosave_enabled = True
+            interval = self.autosave_timer.interval()
+            if interval == 0: interval = 60000
+            self.autosave_timer.start(interval)
+            
+            self.status.showMessage(f"Opened Spreadsheet: {path} (Autosave Active)")
+
+    def _save_spreadsheet(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Spreadsheet As", "", "Excel (*.xlsx);;Excel Legacy (*.xls);;CSV (*.csv);;ODS (*.ods)")
+        if path:
+            self.spreadsheet_view.save_file(path)
+            self.current_filepath = path
+            self.is_dirty = False
+            self.autosave_enabled = True
+            self.autosave_timer.start(self.autosave_timer.interval() or 60000)
+            self.status.showMessage(f"Spreadsheet saved to: {path}")
+
+
+
+    def _insert_phrase_to_active_focus(self, text):
+        if hasattr(self, 'spreadsheet_view') and self.main_stack.currentIndex() == 1:
+            fw = QtWidgets.QApplication.focusWidget()
+            if isinstance(fw, QtWidgets.QLineEdit):
+                fw.insert(text)
+            else:
+                items = self.spreadsheet_view.table.selectedItems()
+                if items:
+                    item = items[0]
+                    item.setText((item.text() or "") + text)
+            return
+        
+        # --- FIX: Use insertPlainText for robust document insertion ---
+        self.editor.insertPlainText(text)
+        self.editor.setFocus()
+
+    def _adjust_editor_height(self, _=None):
+        """Dynamically resizes the canvas to hold full A4 pages as you type."""
+        if self.state.view_mode in ["Portrait", "Landscape"]:
+            doc = self.editor.document()
+            page_h = doc.pageSize().height()
+            if page_h > 0:
+                # Calculate how many full pages we currently need
+                pages = math.ceil(doc.size().height() / page_h)
+                if pages < 1: pages = 1
+                
+                # Lock the frame and editor height to perfectly fit those full pages
+                total_h = int(pages * page_h)
+                self.editor.setMinimumHeight(total_h)
+                self.page_frame.setMinimumHeight(total_h)
+
     def _lock_font_properties(self, fmt):
         # Prevents the editor from resetting to default system fonts when deleting text
         if hasattr(self, 'state') and (self.editor.fontFamily() != self.state.font_family or self.editor.fontPointSize() != self.state.font_size):
@@ -1932,6 +2336,32 @@ class MainWindow(QtWidgets.QMainWindow):
             self.editor.setFontFamily(self.state.font_family)
             self.editor.setFontPointSize(self.state.font_size)
             self.editor.blockSignals(False)
+
+    def _translate_selection_to_english(self):
+        cur = self.editor.textCursor()
+        if not cur.hasSelection():
+            # If nothing selected, select the current word
+            cur.select(QtGui.QTextCursor.SelectionType.WordUnderCursor)
+            
+        text = cur.selectedText().strip()
+        if not text: return
+        
+        self.status.showMessage("Translating to English...")
+        QtWidgets.QApplication.processEvents()
+        
+        try:
+            # Ping Google Translate API (Auto-detect to English)
+            url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=" + urllib.parse.quote(text)
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            response = urllib.request.urlopen(req, timeout=3)
+            data = json.loads(response.read().decode('utf-8'))
+            translated_text = "".join([sentence[0] for sentence in data[0]])
+            
+            cur.insertText(translated_text)
+            self.status.showMessage("Translated successfully.", 2000)
+        except Exception as e:
+            self.status.showMessage("Translation failed. Check internet connection.", 3000)
+            logging.error(f"Translation error: {e}")
 
     def _translate_selection(self):
         cur = self.editor.textCursor()
@@ -1978,11 +2408,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.editor.setFocus()     
 
     def _insert_custom_numbered(self, list_style, prefix="", suffix="."):
-            fmt = QtGui.QTextListFormat()
-            fmt.setStyle(list_style)
-            fmt.setNumberPrefix(prefix)
-            fmt.setNumberSuffix(suffix)
-            self.editor.textCursor().createList(fmt)        
+        # --- CUSTOM HINDI ALPHABET INSERTER ---
+        if list_style == "HindiAlpha":
+            cur = self.editor.textCursor()
+            cur.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
+            cur.insertText(f"{prefix}क{suffix} ")
+            self.editor.setFocus()
+            return
+            
+        # --- STANDARD NATIVE QT LISTS ---
+        fmt = QtGui.QTextListFormat()
+        fmt.setStyle(list_style)
+        fmt.setNumberPrefix(prefix)
+        fmt.setNumberSuffix(suffix)
+        self.editor.textCursor().createList(fmt)     
         
 
     def _change_sugg_columns(self):
@@ -2157,20 +2596,37 @@ class MainWindow(QtWidgets.QMainWindow):
             self.doc_timer_active = True
 
     def _perform_autosave(self):
-        if self.autosave_enabled and self.current_filepath and self.is_dirty:
-            try:
-                ext = self.current_filepath.lower().split('.')[-1]
-                if ext == "docx" and HAS_DOCX: 
-                    pass 
-                elif ext in ["html", "htm"]:
-                    self._save_html_silent(self.current_filepath)
-                else:
-                    save_json_atomically({"content": self.editor.toPlainText()}, Path(self.current_filepath))
-                        
-                self.state.save_next_words()
+        """Timer callback that targets correct UI elements to prevent data corruption."""
+        if not self.autosave_enabled or not self.current_filepath or not self.is_dirty:
+            return
+
+        try:
+            ext = self.current_filepath.lower().split('.')[-1]
+
+            # --- SPREADSHEET AUTOSAVE ROUTING ---
+            if hasattr(self, 'spreadsheet_view') and self.main_stack.currentIndex() == 1:
+                self.spreadsheet_view.save_file(self.current_filepath)
                 self.is_dirty = False
-                self.status.showMessage(f"Autosaved to {os.path.basename(self.current_filepath)}", 2000)
-            except Exception: pass
+                self.status.showMessage(f"Autosaved sheet to {os.path.basename(self.current_filepath)}", 2000)
+                return
+            # ------------------------------------
+
+            # --- DOCUMENT AUTOSAVE ROUTING ---
+            if ext == "docx" and HAS_DOCX: 
+                pass # DOCX threaded export usually skipped on background autosave to prevent freezing
+            elif ext in ["html", "htm"]:
+                self._save_html_silent(self.current_filepath)
+            else:
+                # Standard raw text save
+                with open(self.current_filepath, 'w', encoding='utf-8') as f:
+                    f.write(self.editor.toPlainText())
+                    
+            self.state.save_next_words()
+            self.is_dirty = False
+            self.status.showMessage(f"Autosaved doc to {os.path.basename(self.current_filepath)}", 2000)
+
+        except Exception as e: 
+            self.status.showMessage(f"Autosave failed: {str(e)}", 3000)
 
     def _handle_context_action(self, action: str):
         if action == "train_sel": self._train_manual()
@@ -2217,6 +2673,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     
                     self._mark_dirty()
                     
+ 
         elif action == "context_correct_all":
             cur = self.editor.textCursor()
             if not cur.hasSelection(): 
@@ -2230,6 +2687,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     
         elif action == "context_translate":
             self._translate_selection()
+            
+        # Add these two lines to handle the English translation signal
+        elif action == "context_translate_en":
+            self._translate_selection_to_english()
                 
 
     def _setup_actions(self):
@@ -2281,10 +2742,15 @@ class MainWindow(QtWidgets.QMainWindow):
         
         self.act_insert_date = QtGui.QAction("Insert Date/Time", self, shortcut="Ctrl+Shift+D", triggered=self._insert_datetime)
         self.act_insert_line = QtGui.QAction("Insert Horizontal Line", self, triggered=self._insert_horizontal_line)
+        
         self.act_word_wrap = QtGui.QAction("Toggle Word Wrap", self, triggered=self._toggle_wrap)
         
         self.act_translate = QtGui.QAction("Translate Selection to Hindi", self, shortcut="Ctrl+Shift+E", triggered=self._translate_selection)
         self.addAction(self.act_translate)
+        
+        # Add these two lines to bind the English translation action and shortcut
+        self.act_translate_en = QtGui.QAction("Translate Selection to English", self, shortcut="Ctrl+Shift+W", triggered=self._translate_selection_to_english)
+        self.addAction(self.act_translate_en)
 
     def _change_suggestion_mode(self):
         if self.act_sugg_dock.isChecked(): 
@@ -2301,11 +2767,41 @@ class MainWindow(QtWidgets.QMainWindow):
         tb_file = QtWidgets.QToolBar("File")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_file)
 
-        tb_file.addAction(self.act_new)
-        tb_file.addAction(self.act_open)
-        tb_file.addAction(self.act_save)
+        # --- NEW BUTTON w/ SUBMENU ---
+        self.btn_new = QtWidgets.QToolButton()
+        self.btn_new.setText("New")
+        self.btn_new.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_new = QtWidgets.QMenu(self.btn_new)
+        menu_new.addAction("New Document", lambda: self._new_file())
+        menu_new.addAction("New Spreadsheet", self._new_spreadsheet)
+        self.btn_new.setMenu(menu_new)
+        tb_file.addWidget(self.btn_new)
+
+        # --- OPEN BUTTON w/ SUBMENU ---
+        self.btn_open = QtWidgets.QToolButton()
+        self.btn_open.setText("Open")
+        self.btn_open.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_open = QtWidgets.QMenu(self.btn_open)
+        menu_open.addAction("Open Document...", self._open_file)
+        menu_open.addAction("Open Spreadsheet...", self._open_spreadsheet)
+        self.btn_open.setMenu(menu_open)
+        tb_file.addWidget(self.btn_open)
+
+        # --- SAVE BUTTON w/ SUBMENU ---
+        self.btn_save = QtWidgets.QToolButton()
+        self.btn_save.setText("Save")
+        self.btn_save.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup) # FIX: .MenuButtonPopup Allows clicking the icon!
+        self.btn_save.setDefaultAction(self.act_save) # FIX: Default action saves current file
+        
+        menu_save = QtWidgets.QMenu(self.btn_save)
+        menu_save.addAction("Save Document As...", self._save_docx)
+        menu_save.addAction("Save Spreadsheet As...", self._save_spreadsheet)
+        self.btn_save.setMenu(menu_save)
+        tb_file.addWidget(self.btn_save)
+
         tb_file.addAction(self.act_print)
         tb_file.addSeparator()
+       
 
         self.tpl_btn = QtWidgets.QToolButton()
         self.tpl_btn.setText("Templates")
@@ -2378,7 +2874,7 @@ class MainWindow(QtWidgets.QMainWindow):
         add_fmt("Bullet", self._insert_bullet)
         
         self.btn_numbered = QtWidgets.QToolButton()
-        self.btn_numbered.setText("Number")
+        self.btn_numbered.setText("Numbered")
         self.btn_numbered.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.menu_numbered = QtWidgets.QMenu(self.btn_numbered)
         self.btn_numbered.setMenu(self.menu_numbered)
@@ -2416,6 +2912,11 @@ class MainWindow(QtWidgets.QMainWindow):
             ("I.", QtGui.QTextListFormat.Style.ListUpperRoman, "", "."),
             ("I).", QtGui.QTextListFormat.Style.ListUpperRoman, "", ")."),
             ("(I).", QtGui.QTextListFormat.Style.ListUpperRoman, "(", ")."),
+            
+            # 6. Hindi Alphabet (Custom Smart Engine)
+            ("क.", "HindiAlpha", "", "."),
+            ("क).", "HindiAlpha", "", ")."),
+            ("(क).", "HindiAlpha", "(", ")."),
         ]
 
         for index, (label, style_fmt, prefix, suffix) in enumerate(styles):
@@ -2425,9 +2926,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._insert_custom_numbered(s, p, sx),
                 self.menu_numbered.close()
             ])
-            # Distribute items uniformly into 2 structural columns
-            row = index // 2
-            col = index % 2
+            
+            # Distribute items uniformly into 3 structural columns
+            row = index // 3
+            col = index % 3
             grid_layout.addWidget(btn, row, col)
 
         action_widget = QWidgetAction(self)
@@ -2440,7 +2942,7 @@ class MainWindow(QtWidgets.QMainWindow):
         
         tb_fmt.addSeparator()
         add_fmt("Table", self._insert_table)
-        add_fmt("Img", self._insert_image)
+        add_fmt("Image", self._insert_image)
         tb_fmt.addSeparator()
 
         # Create an expanding spacer widget to push the voice indicator to the right side of tb_file
@@ -2478,10 +2980,17 @@ class MainWindow(QtWidgets.QMainWindow):
         filem.addAction(self.act_new)
         filem.addAction(self.act_open)
         filem.addAction(self.act_save)
+        filem.addSeparator()
         filem.addAction(self.act_save_docx)
         filem.addAction(self.act_save_html)
         filem.addAction(self.act_export_pdf)
         filem.addSeparator()
+       # --- NEW SPREADSHEET MENUS ---
+        filem.addAction("New Spreadsheet", self._new_spreadsheet)
+        filem.addAction("Open Spreadsheet (.xls, .csv)...", self._open_spreadsheet)
+        filem.addAction("Save Spreadsheet As...", self._save_spreadsheet)
+        filem.addSeparator()
+        # -----------------------------
         filem.addAction(self.act_page_setup)
         filem.addAction(self.act_print)
         
@@ -2495,6 +3004,14 @@ class MainWindow(QtWidgets.QMainWindow):
         editm.addAction(self.act_insert_line) 
         
         viewm = men.addMenu("&View")
+        
+        # --- NEW SPREADSHEET TOGGLE ---
+        self.act_view_sheet = QtGui.QAction("Spreadsheet Mode (Beta)", self, checkable=True)
+        self.act_view_sheet.triggered.connect(self._toggle_spreadsheet_mode)
+        viewm.addAction(self.act_view_sheet)
+        viewm.addSeparator()
+        # ------------------------------
+        
         pagem = viewm.addMenu("Page Layout View")
         pagem.addAction(self.act_view_web)
         pagem.addAction(self.act_view_port)
@@ -2594,7 +3111,10 @@ class MainWindow(QtWidgets.QMainWindow):
         
         self.ph_list = QtWidgets.QListWidget()
         self.ph_list.addItems(self.state.phrases)
-        self.ph_list.itemDoubleClicked.connect(lambda i: self.editor.textCursor().insertText(i.text()))
+        
+        # USE OUR NEW ROUTER
+        self.ph_list.itemDoubleClicked.connect(lambda i: self._insert_phrase_to_active_focus(i.text()))
+        
         self.ph_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.ph_list.customContextMenuRequested.connect(self._show_phrase_context_menu)
         v.addWidget(self.ph_list)
@@ -2603,17 +3123,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dock.setWidget(w)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock)
         
-        # Add the keyboard shortcut to jump to phrases
         self.act_focus_phrases = QtGui.QAction("Focus Phrases", self, shortcut="Alt+P", triggered=self.ph_list.setFocus)
         self.addAction(self.act_focus_phrases)
 
-        # Override the KeyPressEvent for the list widget directly
         def ph_list_key_press(event):
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 item = self.ph_list.currentItem()
                 if item:
-                    self.editor.textCursor().insertText(item.text())
-                    self.editor.setFocus() # Jump back to editor
+                    # USE OUR NEW ROUTER HERE TOO
+                    self._insert_phrase_to_active_focus(item.text())
+                    
+                    # Jump focus back to wherever the user was working
+                    if self.main_stack.currentIndex() == 0: self.editor.setFocus()
+                    else: self.spreadsheet_view.table.setFocus()
             else:
                 QtWidgets.QListWidget.keyPressEvent(self.ph_list, event)
                 
@@ -2646,7 +3168,7 @@ class MainWindow(QtWidgets.QMainWindow):
         v.setContentsMargins(0, 0, 0, 0)
         self.sugg_list = QtWidgets.QListWidget()
         self.sugg_list.setFocusPolicy(Qt.FocusPolicy.NoFocus) 
-        self.sugg_list.itemClicked.connect(lambda i: self.editor.insert_suggestion_from_dock(i.data(Qt.ItemDataRole.UserRole)))
+        self.sugg_list.itemClicked.connect(lambda i: self._insert_selected_dock_suggestion())
         v.addWidget(self.sugg_list)
         w.setLayout(v)
         self.sugg_dock.setWidget(w)
@@ -2681,13 +3203,27 @@ class MainWindow(QtWidgets.QMainWindow):
         
         self.sugg_list.setCurrentRow(new_row)
 
+
     @QtCore.Slot()
     def _insert_selected_dock_suggestion(self):
         row = self.sugg_list.currentRow()
         if row >= 0:
             word = self.sugg_list.item(row).data(Qt.ItemDataRole.UserRole)
-            self.editor.insert_suggestion_from_dock(word)
-
+            if hasattr(self, 'spreadsheet_view') and self.main_stack.currentIndex() == 1:
+                fw = QtWidgets.QApplication.focusWidget()
+                if isinstance(fw, QtWidgets.QLineEdit):
+                    text = fw.text()
+                    pos = fw.cursorPosition()
+                    start = pos - 1
+                    while start >= 0 and not text[start].isspace(): start -= 1
+                    start += 1
+                    
+                    fw.setText(text[:start] + word + " " + text[pos:])
+                    fw.setCursorPosition(start + len(word) + 1)
+                    if hasattr(fw, '_last_word'): fw._last_word = word
+            else:
+                self.editor.insert_suggestion_from_dock(word)
+                self.editor.setFocus() # Ensure focus jumps back!
     def _build_statusbar(self):
         self.status = self.statusBar()
         self.lbl_cursor_pos = QtWidgets.QLabel("Ln 1, Col 0")
@@ -2710,13 +3246,16 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_translit_badge(self, _=None):
         if self.editor._english_mode:
             self.lbl_translit_badge.setText("EN / HINGLISH")
-            self.lbl_translit_badge.setStyleSheet("color: white; background-color: #3b82f6; padding: 2px 6px; border-radius: 4px; font-weight: bold;")
+            # Deep, semi-transparent blue
+            self.lbl_translit_badge.setStyleSheet("color: white; background-color: rgba(30, 58, 138, 0.8); padding: 2px 6px; border-radius: 4px; font-weight: bold;")
         elif self.state.transliteration_enabled:
             self.lbl_translit_badge.setText("TRANSLIT: ON")
-            self.lbl_translit_badge.setStyleSheet("color: white; background-color: #10b981; padding: 2px 6px; border-radius: 4px; font-weight: bold;")
+            # Deep, semi-transparent green
+            self.lbl_translit_badge.setStyleSheet("color: white; background-color: rgba(4, 120, 87, 0.8); padding: 2px 6px; border-radius: 4px; font-weight: bold;")
         else:
             self.lbl_translit_badge.setText("TRANSLIT: OFF")
-            self.lbl_translit_badge.setStyleSheet("color: white; background-color: #ef4444; padding: 2px 6px; border-radius: 4px; font-weight: bold;")
+            # Deep, semi-transparent red
+            self.lbl_translit_badge.setStyleSheet("color: white; background-color: rgba(153, 27, 27, 0.8); padding: 2px 6px; border-radius: 4px; font-weight: bold;")
 
     def _page_setup(self):
         dialog = QPageSetupDialog(self.printer, self)
@@ -2724,9 +3263,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_view_mode()
 
     def _change_view_mode(self):
-        if self.act_view_port.isChecked(): self.state.view_mode = "Portrait"
-        elif self.act_view_land.isChecked(): self.state.view_mode = "Landscape"
-        else: self.state.view_mode = "Web"
+        layout = self.printer.pageLayout()
+        if self.act_view_port.isChecked(): 
+            self.state.view_mode = "Portrait"
+            layout.setOrientation(QtGui.QPageLayout.Orientation.Portrait)
+        elif self.act_view_land.isChecked(): 
+            self.state.view_mode = "Landscape"
+            layout.setOrientation(QtGui.QPageLayout.Orientation.Landscape)
+        else: 
+            self.state.view_mode = "Web"
+            
+        self.printer.setPageLayout(layout)
         self._update_view_mode()
 
     def _apply_theme(self):
@@ -2734,23 +3281,35 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_view_mode(self):
         fmt = self.editor.document().rootFrame().frameFormat()
+        doc = self.editor.document()
         
+        # Check the printer to see if the user changed orientation via Page Setup Dialog
+        layout = self.printer.pageLayout()
+        if layout.orientation() == QtGui.QPageLayout.Orientation.Landscape:
+            self.state.view_mode = "Landscape"
+        elif self.state.view_mode != "Web":
+            self.state.view_mode = "Portrait"
+            
         if self.state.view_mode in ["Portrait", "Landscape"]:
             self.canvas_layout.setContentsMargins(40, 40, 40, 40)
-            layout = self.printer.pageLayout()
             margins = layout.marginsPixels(96)
             
+            # Standard A4/Letter size at 96 DPI
             if self.state.view_mode == "Portrait":
-                self.page_frame.setFixedWidth(816)
-                self.page_frame.setMinimumHeight(1056)
-                self.editor.document().setPageSize(QtCore.QSizeF(816, 1056))
-            else:
-                self.page_frame.setFixedWidth(1056)
-                self.page_frame.setMinimumHeight(816)
-                self.editor.document().setPageSize(QtCore.QSizeF(1056, 816))
+                page_w, page_h = 816, 1056
+            else: # Landscape (Flipped dimensions)
+                page_w, page_h = 1056, 816
                 
-            fmt.setTopMargin(margins.top()); fmt.setBottomMargin(margins.bottom())
-            fmt.setLeftMargin(margins.left()); fmt.setRightMargin(margins.right())
+            self.page_frame.setFixedWidth(page_w)
+            doc.setPageSize(QtCore.QSizeF(page_w, page_h))
+            
+            gap_height = 24
+            
+            # Strict Margin Enforcement
+            fmt.setTopMargin(margins.top())
+            fmt.setBottomMargin(margins.bottom() + gap_height)
+            fmt.setLeftMargin(margins.left())
+            fmt.setRightMargin(margins.right())
             
             if self.dark_mode_enabled:
                 fmt.setBackground(QtGui.QColor("#1f2937"))
@@ -2761,7 +3320,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.page_frame.setMaximumWidth(16777215)
             self.page_frame.setMinimumHeight(0)
             self.canvas_layout.setContentsMargins(0, 0, 0, 0)
-            self.editor.document().setPageSize(QtCore.QSizeF(-1, -1))
+            doc.setPageSize(QtCore.QSizeF(-1, -1))
+            
             fmt.setTopMargin(8); fmt.setBottomMargin(8)
             fmt.setLeftMargin(8); fmt.setRightMargin(8)
             
@@ -2770,7 +3330,18 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 fmt.clearBackground()
                 
-        self.editor.document().rootFrame().setFormat(fmt)
+        doc.rootFrame().setFormat(fmt)
+        self._adjust_editor_height() # Force resize immediately
+        self.editor.viewport().update() # Clean repaint
+        
+        
+    def _toggle_spreadsheet_mode(self, checked):
+        if checked:
+            self.main_stack.setCurrentIndex(1) # Show Spreadsheet
+            self.status.showMessage("Spreadsheet Mode Active", 3000)
+        else:
+            self.main_stack.setCurrentIndex(0) # Show Document
+            self.status.showMessage("Document Mode Active", 3000)    
 
     def _toggle_theme(self):
         self.dark_mode_enabled = not self.dark_mode_enabled
@@ -2784,12 +3355,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self.editor.insertHtml(html)
 
     def _toggle_format(self, fmt_type):
+        # --- ROUTE TO SPREADSHEET ---
+        if hasattr(self, 'spreadsheet_view') and self.main_stack.currentIndex() == 1:
+            table = self.spreadsheet_view.table
+            for idx in table.selectedIndexes():
+                item = table.item(idx.row(), idx.column())
+                if not item:
+                    item = QtWidgets.QTableWidgetItem("")
+                    table.setItem(idx.row(), idx.column(), item)
+                
+                font = item.font()
+                if fmt_type == 'bold': font.setBold(not font.bold())
+                elif fmt_type == 'italic': font.setItalic(not font.italic())
+                elif fmt_type == 'underline': font.setUnderline(not font.underline())
+                elif fmt_type == 'strike': font.setStrikeOut(not font.strikeOut())
+                item.setFont(font)
+            self._mark_dirty()
+            return
+
+        # --- ROUTE TO DOCUMENT (Existing logic) ---
         cur = self.editor.textCursor()
         fmt = cur.charFormat()
         if fmt_type == 'bold': fmt.setFontWeight(QtGui.QFont.Weight.Bold if fmt.fontWeight() != QtGui.QFont.Weight.Bold else QtGui.QFont.Weight.Normal)
         elif fmt_type == 'italic': fmt.setFontItalic(not fmt.fontItalic())
         elif fmt_type == 'underline': fmt.setFontUnderline(not fmt.fontUnderline())
-        elif fmt_type == 'strike': fmt.setFontStrikeOut(not fmt.fontStrikeOut())
+        elif fmt_type == 'strike': fmt.setFontStrikeOut(not font.strikeOut())
         elif fmt_type == 'subscript':
             fmt.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignNormal if fmt.verticalAlignment() == QTextCharFormat.VerticalAlignment.AlignSubScript else QTextCharFormat.VerticalAlignment.AlignSubScript)
         elif fmt_type == 'superscript':
@@ -2957,6 +3547,42 @@ class MainWindow(QtWidgets.QMainWindow):
             if ext == "docx" and HAS_DOCX:
                 doc = docx.Document(path)
                 html_fragments = []
+                
+                # --- SEQUENTIAL BLOCK READER ---
+                for block in doc.element.body:
+                    if block.tag.endswith('p'):
+                        # Match the XML element to the python-docx paragraph object
+                        p = next((para for para in doc.paragraphs if para._element == block), None)
+                        if p:
+                            p_html = "<p"
+                            if p.alignment and WD_ALIGN_PARAGRAPH:
+                                if p.alignment == WD_ALIGN_PARAGRAPH.CENTER: p_html += ' align="center"'
+                                elif p.alignment == WD_ALIGN_PARAGRAPH.RIGHT: p_html += ' align="right"'
+                                elif p.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY: p_html += ' align="justify"'
+                            p_html += ">"
+                            for run in p.runs:
+                                t = run.text.replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+                                if run.bold: t = f"<b>{t}</b>"
+                                if run.italic: t = f"<i>{t}</i>"
+                                if run.underline: t = f"<u>{t}</u>"
+                                if run.font.strike: t = f"<s>{t}</s>"
+                                p_html += t
+                            p_html += "</p>"
+                            html_fragments.append(p_html)
+                            
+                    elif block.tag.endswith('tbl'):
+                        # Match the XML element to the python-docx table object
+                        table = next((tbl for tbl in doc.tables if tbl._element == block), None)
+                        if table:
+                            html_fragments.append("<table border='1' cellspacing='0' cellpadding='4'>")
+                            for row in table.rows:
+                                html_fragments.append("<tr>")
+                                for cell in row.cells: html_fragments.append(f"<td>{cell.text}</td>")
+                                html_fragments.append("</tr>")
+                            html_fragments.append("</table><br>")
+                            
+                self.editor.setHtml("".join(html_fragments))
+                
                 for p in doc.paragraphs:
                     p_html = "<p"
                     if p.alignment and WD_ALIGN_PARAGRAPH:
@@ -2984,11 +3610,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.editor.setHtml("".join(html_fragments))
             elif ext in ["html", "htm"]:
                 with open(path, "r", encoding="utf-8") as f: self.editor.setHtml(f.read())
+            # --- NEW SPREADSHEET OPEN ROUTING ---
             elif ext in ["csv", "xlsx", "ods"]:
-                if ext == "xlsx": df = pd.read_excel(path, engine="openpyxl")
-                elif ext == "ods": df = pd.read_excel(path, engine="odf")
-                else: df = pd.read_csv(path)
-                self.editor.insertHtml(df.to_html(index=False, border=1) + "<br>")
+                self.act_view_sheet.setChecked(True)
+                self.main_stack.setCurrentIndex(1)
+                self.spreadsheet_view.load_file(path)
+            # ------------------------------------
             else:
                 with open(path, "r", encoding="utf-8") as f: self.editor.setPlainText(f.read())
             
@@ -3003,26 +3630,38 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Open failed", str(e))
 
     def _save_manual(self):
-        if self.current_filepath:
-            ext = self.current_filepath.lower().split('.')[-1]
-            try:
+        # 1. If no file path exists yet (Brand New File -> trigger "Save As")
+        if not self.current_filepath:
+            if hasattr(self, 'spreadsheet_view') and self.main_stack.currentIndex() == 1:
+                self._save_spreadsheet()
+            else:
+                self._save_docx()
+            return
+
+        # 2. If a file path ALREADY exists (Ctrl+S -> Quick Save)
+        try:
+            if hasattr(self, 'spreadsheet_view') and self.main_stack.currentIndex() == 1:
+                # -> Route to Spreadsheet Saver
+                self.spreadsheet_view.save_file(self.current_filepath)
+            else:
+                # -> Route to Document Saver
+                ext = self.current_filepath.lower().split('.')[-1]
                 if ext == "docx" and HAS_DOCX: 
                     self._save_docx_threaded(self.current_filepath)
                 elif ext in ["html", "htm"]:
                     self._save_html_silent(self.current_filepath)
-                    self.is_dirty = False
-                    self.status.showMessage("Saved successfully.")
                 else:
                     with open(self.current_filepath, "w", encoding="utf-8") as f: 
                         f.write(self.editor.toPlainText())
-                    self.is_dirty = False
-                    self.status.showMessage("Saved successfully.")
-            except PermissionError:
-                QtWidgets.QMessageBox.warning(self, "File Locked", f"Cannot save to {self.current_filepath}. Close the document in Word first.")
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(self, "Save Error", str(e))
-        else:
-            self._save_docx()
+            
+            # 3. CRITICAL: Reset the dirty flag so the app knows your work is safe!
+            self.is_dirty = False
+            self.status.showMessage("Saved successfully.", 2000)
+
+        except PermissionError:
+            QtWidgets.QMessageBox.warning(self, "File Locked", f"Cannot save to {self.current_filepath}. Close the file in Word/Excel first.")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Save Error", str(e))
 
     def _save_docx(self):
         if not HAS_DOCX:
@@ -3071,36 +3710,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.critical(self, "Save Error", str(e))
 
     def _save_html_silent(self, path):
-        html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-    body {{
-        font-family: '{self.state.font_family}', sans-serif;
-        font-size: {self.state.font_size}pt;
-        line-height: 1.5;
-        margin: auto;
-        background-color: #fcfcfc;
-    }}
-    .document {{
-
-    }}
-    table {{ width: 100%; border-collapse: collapse; }}
-    td {{ padding: 5px; }}
-</style>
-</head>
-<body>
-<div class="document">
-{self.editor.toHtml()}
-</div>
-</body>
-</html>"""
+        # toHtml() already creates a perfect HTML file with styling and CSS!
+        html_content = self.editor.toHtml()
+        
         tmp_path = Path(path).with_suffix('.tmp')
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(html_content)
         os.replace(tmp_path, path)
-
+        
     def _export_pdf(self):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export PDF", "", "PDF Document (*.pdf)")
         if path:
@@ -3127,21 +3744,56 @@ class MainWindow(QtWidgets.QMainWindow):
         self.printer.setDocName(title)
         
         try:
-            print_doc = self.editor.document().clone(self)
-            
-            fmt = print_doc.rootFrame().frameFormat()
-            fmt.setBackground(QtGui.QColor("#ffffff"))
-            print_doc.rootFrame().setFormat(fmt)
-
             preview = QPrintPreviewDialog(self.printer, self)
             preview.setWindowTitle("Print Preview - " + APP_NAME)
-            
             preview.resize(950, 600) 
             
-            preview.paintRequested.connect(print_doc.print_)
+            if hasattr(self, 'spreadsheet_view') and self.main_stack.currentIndex() == 1:
+                preview.paintRequested.connect(self._print_spreadsheet)
+            else:
+                print_doc = self.editor.document().clone(self)
+                fmt = print_doc.rootFrame().frameFormat()
+                fmt.setBackground(QtGui.QColor("#ffffff"))
+                print_doc.rootFrame().setFormat(fmt)
+                preview.paintRequested.connect(print_doc.print_)
+            
             preview.exec()
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Print Error", str(e))
+
+    def _print_spreadsheet(self, printer):
+        """Generates a clean HTML layout of the spreadsheet without Row/Col headers."""
+        table = self.spreadsheet_view.table
+        
+        # Trim off empty bounds for the printout
+        max_r, max_c = 0, 0
+        for r in range(table.rowCount()):
+            for c in range(table.columnCount()):
+                item = table.item(r, c)
+                if item and item.text().strip():
+                    max_r = max(max_r, r)
+                    max_c = max(max_c, c)
+                    
+        html = "<table border='1' cellspacing='0' cellpadding='6' width='100%' style='border-collapse: collapse;'>"
+        
+        # Print ONLY the actual data rows (No gray headers)
+        for r in range(max_r + 1):
+            html += "<tr>"
+            for c in range(max_c + 1):
+                item = table.item(r, c)
+                # If bold/italic was applied, wrap it in HTML tags for printing
+                text = item.text() if item else ""
+                if item:
+                    if item.font().bold(): text = f"<b>{text}</b>"
+                    if item.font().italic(): text = f"<i>{text}</i>"
+                    if item.font().underline(): text = f"<u>{text}</u>"
+                html += f"<td>{text}</td>"
+            html += "</tr>"
+        html += "</table>"
+        
+        doc = QtGui.QTextDocument()
+        doc.setHtml(html)
+        doc.print_(printer)
 
     def _open_corrections(self):
         dlg = CorrectionsDialog(self.state, editor_ref=self.editor, parent=self)
@@ -3436,8 +4088,19 @@ class ImagePropertiesDialog(QtWidgets.QDialog):
         tab_fx = QtWidgets.QWidget()
         fx_layout = QtWidgets.QFormLayout(tab_fx)
         
+        # 1. Initialize all FX Widgets (This was missing!)
+        self.slider_bright = QtWidgets.QSlider(Qt.Orientation.Horizontal)
+        self.slider_bright.setRange(50, 150); self.slider_bright.setValue(100)
+
+        self.slider_contrast = QtWidgets.QSlider(Qt.Orientation.Horizontal)
+        self.slider_contrast.setRange(50, 150); self.slider_contrast.setValue(100)
+
+        self.slider_smooth = QtWidgets.QSlider(Qt.Orientation.Horizontal)
+        self.slider_smooth.setRange(0, 5); self.slider_smooth.setValue(0)
+
         self.slider_opacity = QtWidgets.QSlider(Qt.Orientation.Horizontal)
         self.slider_opacity.setRange(10, 100); self.slider_opacity.setValue(100)
+        
         self.cb_grayscale = QtWidgets.QCheckBox("Convert to Black & White")
         self.cb_sepia = QtWidgets.QCheckBox("Sepia Tone (Vintage)")
         self.cb_flip_h = QtWidgets.QCheckBox("Mirror Horizontal")
@@ -3446,20 +4109,34 @@ class ImagePropertiesDialog(QtWidgets.QDialog):
         self.btn_tint = QtWidgets.QPushButton("Apply Color Tint (None)")
         self.btn_tint.clicked.connect(self._choose_tint_color)
         
+        # 2. Add them to the layout (Checkboxes flush left)
+        fx_layout.addRow("Brightness:", self.slider_bright)
+        fx_layout.addRow("Contrast:", self.slider_contrast)
+        fx_layout.addRow("Blur (Smooth):", self.slider_smooth)
         fx_layout.addRow("Opacity (%):", self.slider_opacity)
-        fx_layout.addRow("", self.cb_grayscale)
-        fx_layout.addRow("", self.cb_sepia)
-        fx_layout.addRow("", self.cb_flip_h)
+        
+        fx_layout.addRow(QtWidgets.QLabel("<hr>"))
+        fx_layout.addRow(self.cb_grayscale)
+        fx_layout.addRow(self.cb_sepia)
+        fx_layout.addRow(self.cb_flip_h)
+        
         fx_layout.addRow(QtWidgets.QLabel("<hr>"))
         fx_layout.addRow("Color Overlay:", self.btn_tint)
+        
+        # 3. Finalize Tab
         self.tabs.addTab(tab_fx, "✨ FX")
-
         left_layout.addWidget(self.tabs)
 
+        # 4. Finalize Left Panel (Buttons Left-Aligned)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._finalize_and_accept)
         buttons.rejected.connect(self.reject)
-        left_layout.addWidget(buttons)
+        
+        btn_align_layout = QtWidgets.QHBoxLayout()
+        btn_align_layout.addWidget(buttons)
+        btn_align_layout.addStretch() 
+        
+        left_layout.addLayout(btn_align_layout)
         main_layout.addWidget(left_panel, 1)
 
         # --- RIGHT PANEL: LIVE PREVIEW ---
@@ -3478,6 +4155,11 @@ class ImagePropertiesDialog(QtWidgets.QDialog):
         self.sb_w.valueChanged.connect(self._on_width_changed)
         self.sb_h.valueChanged.connect(self._on_height_changed)
         
+        # Connect new advanced sliders
+        self.slider_bright.valueChanged.connect(self._update_preview)
+        self.slider_contrast.valueChanged.connect(self._update_preview)
+        self.slider_smooth.valueChanged.connect(self._update_preview)
+        
         for widget in [self.sb_border, self.sb_radius, self.sb_padding, self.sb_rotate, self.slider_opacity, self.sb_shadow_offset]:
             widget.valueChanged.connect(self._update_preview)
         
@@ -3487,6 +4169,8 @@ class ImagePropertiesDialog(QtWidgets.QDialog):
         self.combo_border_style.currentIndexChanged.connect(self._update_preview)
 
         self._update_preview()
+
+
 
     def _launch_visual_cropper(self):
         # Open the new tool passing the CURRENT image state
@@ -3517,10 +4201,12 @@ class ImagePropertiesDialog(QtWidgets.QDialog):
     def _choose_tint_color(self):
         color = QtWidgets.QColorDialog.getColor(self.tint_color, self, "Tint Color", QtWidgets.QColorDialog.ColorDialogOption.ShowAlphaChannel)
         if color.isValid():
+            # Force the alpha to 70 (out of 255) so it acts as a translucent wash
+            color.setAlpha(70) 
             self.tint_color = color
             self.btn_tint.setText(f"Tint: {color.name()}")
             self._update_preview()
-
+            
     def _on_width_changed(self, val):
         if self._updating_sizes or not self.cb_lock_ratio.isChecked(): return
         self._updating_sizes = True; self.sb_h.setValue(val / self.orig_ratio); self._updating_sizes = False
@@ -3554,11 +4240,42 @@ class ImagePropertiesDialog(QtWidgets.QDialog):
         
         img = self.orig_image.copy()
 
-        # 2. Filters
+        # --- 1. ADVANCED PILLOW PROCESSING (Brightness, Contrast, Smooth) ---
+        if HAS_PIL:
+            from PIL import Image, ImageEnhance, ImageFilter
+            from PIL.ImageQt import ImageQt
+            import io
+            
+            # Convert QImage to Pillow Image
+            buffer = QtCore.QBuffer()
+            buffer.open(QtCore.QIODevice.OpenModeFlag.ReadWrite)
+            img.save(buffer, "PNG")
+            pil_img = Image.open(io.BytesIO(buffer.data().data()))
+            
+            # Apply Brightness (if the slider was added and moved)
+            if hasattr(self, 'slider_bright') and self.slider_bright.value() != 100:
+                enhancer = ImageEnhance.Brightness(pil_img)
+                pil_img = enhancer.enhance(self.slider_bright.value() / 100.0)
+                
+            # Apply Contrast (if the slider was added and moved)
+            if hasattr(self, 'slider_contrast') and self.slider_contrast.value() != 100:
+                enhancer = ImageEnhance.Contrast(pil_img)
+                pil_img = enhancer.enhance(self.slider_contrast.value() / 100.0)
+                
+            # Apply Smoothing / BoxBlur (if the slider was added and moved)
+            if hasattr(self, 'slider_smooth') and self.slider_smooth.value() > 0:
+                pil_img = pil_img.filter(ImageFilter.BoxBlur(self.slider_smooth.value()))
+                
+            # Convert back to PySide6 QImage for the rest of the pipeline
+            img = QtGui.QImage(ImageQt(pil_img).copy())
+        # --------------------------------------------------------------------
+
+        # 2. Filters (Your existing PySide6 code starts here!)
         if self.cb_grayscale.isChecked() or self.cb_sepia.isChecked():
             img = img.convertToFormat(QtGui.QImage.Format.Format_Grayscale8)
             img = img.convertToFormat(QtGui.QImage.Format.Format_ARGB32_Premultiplied)
             
+           
         # 3. Transformations
         transform = QtGui.QTransform()
         if self.cb_flip_h.isChecked(): transform.scale(-1, 1)
@@ -3659,33 +4376,116 @@ class ImagePropertiesDialog(QtWidgets.QDialog):
         align = self.combo_align.currentText()
         return float(w), float(h), self.modified_path, align
 
+
+
+def load_heavy_dependencies(splash_instance):
+    """Loads heavy libraries after the UI is visible, updating the splash screen."""
+    global transliterate, HAS_TRANSLIT, docx, HAS_DOCX
+    global pd, HAS_PANDAS, sr, HAS_SR, pypdf, HAS_PDF
+    global HAS_PIL
+    app = QtWidgets.QApplication.instance()
+ 
+
+    # 1. Indic Transliteration
+    if hasattr(splash_instance, "update_text"):
+        splash_instance.update_text("Warming up Transliteration Engine...")
+    app.processEvents()
+    try:
+        from indic_transliteration.sanscript import transliterate  # type: ignore
+        HAS_TRANSLIT = True
+    except Exception: pass
+
+    # 2. Python-Docx
+    if hasattr(splash_instance, "update_text"):
+        splash_instance.update_text("Loading Native DOCX Support...")
+    app.processEvents()
+    try:
+        global Pt, RGBColor, Inches, WD_COLOR_INDEX, WD_ALIGN_PARAGRAPH, WD_TABLE_ALIGNMENT
+        import docx
+        from docx.shared import Pt, RGBColor, Inches
+        from docx.enum.text import WD_COLOR_INDEX, WD_ALIGN_PARAGRAPH
+        from docx.enum.table import WD_TABLE_ALIGNMENT
+        HAS_DOCX = True
+    except Exception: pass
+
+    # 3. Pandas
+    if hasattr(splash_instance, "update_text"):
+        splash_instance.update_text("Initializing Data Engines...")
+    app.processEvents()
+    try:
+        import pandas as pd
+        HAS_PANDAS = True
+    except Exception: pass
+
+    # 4. Speech Recognition
+    if hasattr(splash_instance, "update_text"):
+        splash_instance.update_text("Connecting Speech Modules...")
+    app.processEvents()
+    try:
+        import speech_recognition as sr  # type: ignore
+        HAS_SR = True
+    except Exception: pass
+
+    # 5. PDF
+    if hasattr(splash_instance, "update_text"):
+        splash_instance.update_text("Finalizing PDF Export Engines...")
+    app.processEvents()
+    try:
+        import pypdf
+        HAS_PDF = True
+    except Exception: pass
+    
+    # 6. Image Processing (Pillow)
+    if hasattr(splash_instance, "update_text"):
+        splash_instance.update_text("Loading Image Studio...")
+    app.processEvents()
+    try:
+        from PIL import Image, ImageEnhance, ImageFilter
+        from PIL.ImageQt import ImageQt
+        HAS_PIL = True
+    except Exception: pass
+
+
 def main():
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     
-    splash_screen = splash.PremiumSplash()
-    splash_screen.start_fade_in()
     
-    app.processEvents() 
-    
-    available_families = QtGui.QFontDatabase.families()
+    # Set the fallback font early
     target_font = "Arial"
+    available_families = QtGui.QFontDatabase.families()
     for f in ["Nirmala UI", "Mangal", "Noto Sans Devanagari", "Arial Unicode MS"]:
         if f in available_families:
             target_font = f
             break
-            
     if target_font: app.setFont(QtGui.QFont(target_font, 10))
+    
+    # 1. INSTANT STARTUP
+    splash_screen = splash.PremiumSplash()
+    splash_screen.show()          # Show it immediately
+    splash_screen.start_fade_in()
+    app.processEvents()           # Force the OS to draw the window
+    
+    # 2. LOAD HEAVY RESOURCES
+    load_heavy_dependencies(splash_screen)
+    
     if not HAS_TRANSLIT:
         QtWidgets.QMessageBox.critical(None, "Missing dependency", "Please install indic-transliteration")
         return
         
+    # 3. BUILD MAIN WINDOW (This also takes time, update splash one last time)
+    if hasattr(splash_screen, "update_text"):
+        splash_screen.update_text("Building User Interface...")
+    app.processEvents()
+    
     win = MainWindow()
     
-    QtCore.QTimer.singleShot(2800, splash_screen.start_fade_out)
-    QtCore.QTimer.singleShot(3400, win.showMaximized)
+    # 4. TRANSITION
+    splash_screen.start_fade_out()
+    QtCore.QTimer.singleShot(600, win.showMaximized) # Show main window just as splash fades
     
     sys.exit(app.exec())
-
+ 
+    
 if __name__ == "__main__":
     main()
