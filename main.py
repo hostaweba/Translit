@@ -1779,55 +1779,59 @@ class HindiEditor(QtWidgets.QTextEdit):
             cur = self.textCursor()
             block_text = cur.block().text()
             
-            # Regex to detect lines starting with: क. | क). | (क).
-            match = re.match(r"^(\(?)?([कखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह])(\)\.|\.)\s+(.*)", block_text)
+            # --- DYNAMIC EDITABLE AUTO-LIST LOGIC ---
+            # Correctly catches prefixes, numbers/Hindi, full suffixes (like ")." or "."), and spaces/tabs
+            match_editable = re.match(r"^([^\dकखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह]*)([\d]+|[कखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह])([\)\.]+)([\s\t]+)(.*)", block_text)
             
-            # --- NEW: SMART EDITABLE NUMERIC AUTO-LIST LOGIC ---
-            # Matches formats like "ques 1.\t text", "1) \t text", "Step 5. \t text"
-            match_num = re.match(r"^([^\d]*)(\d+)(\.\s*|\)\s*|\.\t|\)\t)(.*)", block_text)
-            
-            if match_num and not match:
-                prefix = match_num.group(1)
-                num_str = match_num.group(2)
-                suffix = match_num.group(3)
-                content = match_num.group(4)
+            if match_editable:
+                prefix_part = match_editable.group(1)
+                num_or_char = match_editable.group(2)
+                clean_suffix = match_editable.group(3) # Grabs the EXACT full suffix (e.g. ")." instead of just ")")
+                content = match_editable.group(5)
                 
                 # If Enter is pressed on an empty line, cancel the list formatting
                 if not content.strip():
                     cur.select(QtGui.QTextCursor.SelectionType.BlockUnderCursor)
                     cur.removeSelectedText()
-                    # Reset block formatting back to normal
+                    # Reset block formatting perfectly flush to the left
                     bf = cur.blockFormat()
                     bf.setLeftMargin(0)
                     bf.setTextIndent(0)
                     cur.setBlockFormat(bf)
                     return super().keyPressEvent(ev)
                     
-                super().keyPressEvent(ev)
-                self.insertPlainText(f"{prefix}{int(num_str) + 1}{suffix}")
-                return
-            # ---------------------------------------------------
-            
-            if match:
-                prefix = match.group(1) or ""
-                char = match.group(2)
-                suffix = match.group(3)
-                content = match.group(4)
-                
-                # If you press Enter on an empty list item, cancel the list
-                if not content.strip():
-                    cur.select(QtGui.QTextCursor.SelectionType.BlockUnderCursor)
-                    cur.removeSelectedText()
-                    return super().keyPressEvent(ev)
-                    
-                hindi_chars = "कखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह"
-                idx = hindi_chars.find(char)
-                
-                if idx != -1 and idx + 1 < len(hindi_chars):
-                    next_char = hindi_chars[idx + 1]
+                # Determine the next number or character
+                next_val = None
+                if num_or_char.isdigit():
+                    next_val = str(int(num_or_char) + 1)
+                else:
+                    hindi_chars = "कखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह"
+                    idx = hindi_chars.find(num_or_char)
+                    if idx != -1 and idx + 1 < len(hindi_chars):
+                        next_val = hindi_chars[idx + 1]
+                        
+                if next_val:
+                    # Let the normal line break happen
                     super().keyPressEvent(ev)
-                    self.insertPlainText(f"{prefix}{next_char}{suffix} ")
+                    
+                    new_cur = self.textCursor()
+                    full_marker = f"{prefix_part}{next_val}{clean_suffix}\t"
+                    
+                    # RECALCULATE width dynamically for the new number using the tighter 15px gap
+                    fm = QtGui.QFontMetrics(self.font())
+                    marker_w = fm.horizontalAdvance(f"{prefix_part}{next_val}{clean_suffix}") + 15
+                    
+                    # Apply perfectly aligned hanging indent
+                    bf = new_cur.blockFormat()
+                    bf.setLeftMargin(marker_w)
+                    bf.setTextIndent(-marker_w)
+                    bf.setTabPositions([QtGui.QTextOption.Tab(marker_w, QtGui.QTextOption.TabType.LeftTab)])
+                    new_cur.setBlockFormat(bf)
+                    
+                    new_cur.insertText(full_marker)
+                    self.setTextCursor(new_cur)
                     return
+            # ----------------------------------------
             
             return super().keyPressEvent(ev)
 
@@ -2052,6 +2056,24 @@ class HindiEditor(QtWidgets.QTextEdit):
         menu.addAction("Export as PDF", lambda: self.contextActionTriggered.emit("export_pdf"))
         
         sel = cur.selectedText()
+        
+        # --- NEW: MATH WRAPPERS SUBMENU ---
+        if cur.hasSelection():
+            math_menu = menu.addMenu("Wrap Selection in Math...")
+            if getattr(main_window, 'dark_mode_enabled', False):
+                math_menu.setStyleSheet("QMenu { background-color: #374151; color: white; }")
+                
+            math_menu.addAction("( Round Brackets )", lambda: self.contextActionTriggered.emit("math_wrap_round"))
+            math_menu.addAction("[ Square Brackets ]", lambda: self.contextActionTriggered.emit("math_wrap_square"))
+            math_menu.addAction("{ Curly Braces }", lambda: self.contextActionTriggered.emit("math_wrap_curly"))
+            math_menu.addSeparator()
+            math_menu.addAction("√ Square Root", lambda: self.contextActionTriggered.emit("math_wrap_sqrt"))
+            math_menu.addAction("∛ Cube Root", lambda: self.contextActionTriggered.emit("math_wrap_cbrt"))
+            math_menu.addSeparator()
+            math_menu.addAction("xⁿ Raise to Power...", lambda: self.contextActionTriggered.emit("math_wrap_power"))
+            menu.addSeparator()
+        # ----------------------------------
+        
         if sel:
             matches = [(k, v) for k, v in self.state.user_dict.items() if k in sel]
             if matches:
@@ -2101,37 +2123,98 @@ class HindiEditor(QtWidgets.QTextEdit):
             self.textChanged.emit()
 
 class FractionDialog(QtWidgets.QDialog):
-    """Dialog to easily build inline math equations with fractions."""
+    """Dialog to easily build inline math equations with fractions, roots, and scripts."""
     def __init__(self, bracket=False, parent=None):
         super().__init__(parent)
         title = "Insert (a/b) Equation" if bracket else "Insert a/b Equation"
         self.setWindowTitle(title)
-        self.resize(350, 200)
+        self.resize(500, 420)
         
-        layout = QtWidgets.QFormLayout(self)
+        main_layout = QtWidgets.QVBoxLayout(self)
+        
+        # --- QUICK SYMBOLS KEYBOARD ---
+        sym_group = QtWidgets.QGroupBox("Quick Math Symbols (Click to insert into active box)")
+        sym_layout = QtWidgets.QGridLayout(sym_group)
+        sym_layout.setContentsMargins(5, 5, 5, 5)
+        sym_layout.setSpacing(2)
+        
+        quick_symbols = [
+            "÷", "×", "±", "≠", "≈", "≤", "≥", "∞", "π", "°", 
+            "α", "β", "∆", "∑", "∫", "µ", "θ", "λ", "←", "→"
+        ]
+        
+        for idx, sym in enumerate(quick_symbols):
+            btn = QtWidgets.QPushButton(sym)
+            btn.setFixedSize(30, 30)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus) 
+            btn.clicked.connect(lambda checked=False, s=sym: self._insert_symbol(s))
+            sym_layout.addWidget(btn, idx // 10, idx % 10)
+            
+        main_layout.addWidget(sym_group)
+        
+        # --- EQUATION FORM ---
+        form_layout = QtWidgets.QFormLayout()
         
         self.prefix = QtWidgets.QLineEdit()
         self.prefix.setPlaceholderText("e.g. x = ")
         
+        # Numerator Row with Scripts
+        num_layout = QtWidgets.QHBoxLayout()
         self.num = QtWidgets.QLineEdit()
-        self.num.setPlaceholderText("Numerator (top)")
+        self.num.setPlaceholderText("Numerator (Base)")
+        self.num_sup = QtWidgets.QLineEdit()
+        self.num_sup.setPlaceholderText("Super (e.g. 2)"); self.num_sup.setFixedWidth(85)
+        self.num_sub = QtWidgets.QLineEdit()
+        self.num_sub.setPlaceholderText("Sub (e.g. i)"); self.num_sub.setFixedWidth(85)
+        num_layout.addWidget(self.num); num_layout.addWidget(self.num_sup); num_layout.addWidget(self.num_sub)
         
+        self.num_mod = QtWidgets.QComboBox()
+        self.num_mod.addItems(["Normal", "Square Root (√x)", "Cube Root (∛x)", "Overline (x̅)"])
+        
+        # Denominator Row with Scripts
+        den_layout = QtWidgets.QHBoxLayout()
         self.den = QtWidgets.QLineEdit()
-        self.den.setPlaceholderText("Denominator (bottom)")
+        self.den.setPlaceholderText("Denominator (Base)")
+        self.den_sup = QtWidgets.QLineEdit()
+        self.den_sup.setPlaceholderText("Super (e.g. n)"); self.den_sup.setFixedWidth(85)
+        self.den_sub = QtWidgets.QLineEdit()
+        self.den_sub.setPlaceholderText("Sub (e.g. j)"); self.den_sub.setFixedWidth(85)
+        den_layout.addWidget(self.den); den_layout.addWidget(self.den_sup); den_layout.addWidget(self.den_sub)
+        
+        self.den_mod = QtWidgets.QComboBox()
+        self.den_mod.addItems(["Normal", "Square Root (√x)", "Cube Root (∛x)", "Overline (x̅)"])
+        
+        self.bracket_sup = QtWidgets.QLineEdit()
+        self.bracket_sup.setPlaceholderText("Power of entire bracket (e.g. 2, 1/2)")
+        self.bracket_sup.setEnabled(bracket)
         
         self.suffix = QtWidgets.QLineEdit()
         self.suffix.setPlaceholderText("e.g. + 1/2")
         
-        layout.addRow("Prefix Operator:", self.prefix)
-        layout.addRow("Numerator (a):", self.num)
-        layout.addRow("Denominator (b):", self.den)
-        layout.addRow("Suffix Operator:", self.suffix)
+        form_layout.addRow("Prefix Operator:", self.prefix)
+        form_layout.addRow("Numerator (a):", num_layout)
+        form_layout.addRow("Num Format:", self.num_mod)
+        form_layout.addRow("Denominator (b):", den_layout)
+        form_layout.addRow("Den Format:", self.den_mod)
         
+        if bracket:
+            form_layout.addRow("Bracket Power:", self.bracket_sup)
+            
+        form_layout.addRow("Suffix Operator:", self.suffix)
+        
+        main_layout.addLayout(form_layout)
+        
+        # --- BUTTONS ---
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
-        layout.addRow(btns)
+        main_layout.addWidget(btns)
 
+    def _insert_symbol(self, sym):
+        fw = QtWidgets.QApplication.focusWidget()
+        if isinstance(fw, QtWidgets.QLineEdit):
+            fw.insert(sym)
+            
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2269,6 +2352,44 @@ class MainWindow(QtWidgets.QMainWindow):
         
         QTimer.singleShot(0, lambda: self._new_file(prompt_autosave=False, is_startup=True))
 
+    def _launch_any_file(self):
+        """Opens a file dialog to select any file and launches it in its OS default app."""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select File to Launch", "", "All Files (*.*)")
+        
+        if path:
+            url = QtCore.QUrl.fromLocalFile(os.path.abspath(path))
+            success = QtGui.QDesktopServices.openUrl(url)
+            
+            if not success:
+                QtWidgets.QMessageBox.warning(self, "Launch Failed", f"Could not launch:\n{path}\nNo associated application found on your system.")
+            else:
+                self.status.showMessage(f"Launched: {os.path.basename(path)}", 4000)
+
+    def _launch_in_default_app(self):
+        """Saves current changes and opens the file in the OS default application."""
+        # 1. If the file hasn't been created yet, prompt to save it first
+        if not self.current_filepath:
+            QtWidgets.QMessageBox.information(self, "Unsaved File", "Please save the document first before launching it.")
+            self._save_manual()
+            
+        # 2. If it's STILL None (user canceled the save dialog), abort
+        if not self.current_filepath:
+            return
+            
+        # 3. If there are unsaved changes, automatically save them so the external app sees them
+        if self.is_dirty:
+            self.status.showMessage("Saving before launch...")
+            self._save_manual()
+            
+        # 4. Launch via OS Default
+        url = QtCore.QUrl.fromLocalFile(os.path.abspath(self.current_filepath))
+        success = QtGui.QDesktopServices.openUrl(url)
+        
+        if not success:
+            QtWidgets.QMessageBox.warning(self, "Launch Failed", "Could not open the file. No default application is associated with this file type on your system.")
+        else:
+            self.status.showMessage(f"Launched {os.path.basename(self.current_filepath)} in default app", 4000)
+
     def closeEvent(self, event):
         """Prompt to save before the application closes if there are unsaved changes."""
         if self.is_dirty:
@@ -2286,6 +2407,157 @@ class MainWindow(QtWidgets.QMainWindow):
                 event.ignore()
                 return
         event.accept()
+
+    def _wrap_selection_in_math(self, style):
+        cur = self.editor.textCursor()
+        if not cur.hasSelection():
+            return
+            
+        self.editor._commit_composing()
+        
+        # Ask for superscript string immediately if 'power' was chosen
+        power_str = ""
+        if style == "power":
+            power_str, ok = QtWidgets.QInputDialog.getText(self, "Raise to Power", "Enter Superscript (e.g. 2, n):")
+            if not ok or not power_str.strip(): return
+            power_str = power_str.strip()
+        
+        # 1. Clone the fragment into a temporary document
+        main_doc = self.editor.document()
+        temp_doc = QtGui.QTextDocument()
+        temp_doc.setDocumentMargin(0)
+        
+        temp_cur = QtGui.QTextCursor(temp_doc)
+        temp_cur.insertFragment(cur.selection())
+        
+        # --- CRITICAL FIX: Force all cloned text to be BLACK for printing ---
+        temp_cur.select(QtGui.QTextCursor.SelectionType.Document)
+        black_fmt = QtGui.QTextCharFormat()
+        black_fmt.setForeground(QtGui.QColor(Qt.GlobalColor.black))
+        temp_cur.mergeCharFormat(black_fmt)
+        temp_cur.clearSelection()
+        
+        # Transfer Image Resources to the temp document
+        block = temp_doc.begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid() and frag.charFormat().isImageFormat():
+                    img_name = frag.charFormat().toImageFormat().name()
+                    img = main_doc.resource(QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(img_name))
+                    if img:
+                        temp_doc.addResource(QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(img_name), img)
+                it += 1
+            block = block.next()
+            
+        # 2. Measure the exact pixel size of the selection
+        temp_doc.setTextWidth(-1)
+        ideal_size = temp_doc.size()
+        content_w = max(1, math.ceil(ideal_size.width()))
+        content_h = max(1, math.ceil(ideal_size.height()))
+        
+        # 3. Render the selection into a QImage
+        content_img = QtGui.QImage(content_w, content_h, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+        content_img.fill(Qt.GlobalColor.transparent)
+        content_painter = QtGui.QPainter(content_img)
+        temp_doc.drawContents(content_painter)
+        content_painter.end()
+        
+        # 4. Define specific geometry offsets based on the wrapper chosen
+        left_w = 0; right_w = 0; top_h = 2; bottom_h = 2
+        
+        script_font = QtGui.QFont(self.editor.font())
+        script_font.setPointSize(max(6, int(self.state.font_size * 0.65)))
+        fm_script = QtGui.QFontMetrics(script_font)
+        
+        if style == "round": left_w = 12; right_w = 12
+        elif style == "square": left_w = 10; right_w = 10
+        elif style == "curly": left_w = 14; right_w = 14
+        elif style == "sqrt": left_w = 16; right_w = 4; top_h = 6
+        elif style == "cbrt": left_w = 22; right_w = 4; top_h = 6
+        elif style == "power": 
+            left_w = 2; right_w = fm_script.horizontalAdvance(power_str) + 4
+        
+        width = content_w + left_w + right_w
+        height = content_h + top_h + bottom_h
+        
+        # 5. Create final canvas and draw
+        final_img = QtGui.QImage(width, height, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+        final_img.fill(Qt.GlobalColor.transparent)
+        
+        painter = QtGui.QPainter(final_img)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        
+        # --- CRITICAL FIX: Draw a clean white background so it is visible in dark mode ---
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QtGui.QColor(255, 255, 255))
+        painter.drawRoundedRect(0, 0, width, height, 4, 4)
+        
+        # ALWAYS use Black for the brackets/math symbols so it prints correctly
+        text_color = QtGui.QColor(Qt.GlobalColor.black)
+        pen = QtGui.QPen(text_color, 1.5)
+        painter.setPen(pen)
+        
+        # Draw the original content inside the wrappers
+        painter.drawImage(left_w, top_h, content_img)
+        
+        # 6. Draw Mathematical Wrappers
+        if style == "round":
+            p1 = QtGui.QPainterPath(); p1.moveTo(left_w, 2); p1.quadTo(1, height/2, left_w, height-2); painter.drawPath(p1)
+            p2 = QtGui.QPainterPath(); p2.moveTo(width-right_w, 2); p2.quadTo(width-1, height/2, width-right_w, height-2); painter.drawPath(p2)
+            
+        elif style == "square":
+            painter.drawLine(left_w, 2, 3, 2)
+            painter.drawLine(3, 2, 3, height-2)
+            painter.drawLine(3, height-2, left_w, height-2)
+            painter.drawLine(width-right_w, 2, width-3, 2)
+            painter.drawLine(width-3, 2, width-3, height-2)
+            painter.drawLine(width-3, height-2, width-right_w, height-2)
+            
+        elif style == "curly":
+            p1 = QtGui.QPainterPath(); p1.moveTo(left_w, 2)
+            p1.cubicTo(4, 2, 4, height/2 - 4, 2, height/2)
+            p1.cubicTo(4, height/2 + 4, 4, height-2, left_w, height-2)
+            painter.drawPath(p1)
+            p2 = QtGui.QPainterPath(); p2.moveTo(width-right_w, 2)
+            p2.cubicTo(width-4, 2, width-4, height/2 - 4, width-2, height/2)
+            p2.cubicTo(width-4, height/2 + 4, width-4, height-2, width-right_w, height-2)
+            painter.drawPath(p2)
+            
+        elif style in ["sqrt", "cbrt"]:
+            if style == "cbrt":
+                painter.setFont(script_font)
+                painter.drawText(0, int(height/2 + 2), "3")
+                
+            root_start = left_w - 10
+            p = QtGui.QPainterPath()
+            p.moveTo(root_start, height/2 + 4)
+            p.lineTo(root_start + 4, height - 2)
+            p.lineTo(left_w, 4)
+            p.lineTo(width - 2, 4)
+            painter.drawPath(p)
+            painter.drawLine(width - 2, 4, width - 2, 8) 
+            
+        elif style == "power":
+            painter.setFont(script_font)
+            painter.drawText(QtCore.QRectF(width - right_w + 2, 0, right_w, height / 2.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, power_str)
+            
+        painter.end()
+        
+        # 7. Apply the new dynamic image safely
+        img_name = f"math_wrap_{uuid.uuid4().hex[:8]}.png"
+        url = QtCore.QUrl(img_name)
+        main_doc.addResource(QtGui.QTextDocument.ResourceType.ImageResource, url, final_img)
+        
+        fmt = QtGui.QTextImageFormat()
+        fmt.setName(url.toString())
+        fmt.setWidth(width)
+        fmt.setHeight(height)
+        fmt.setVerticalAlignment(QtGui.QTextCharFormat.VerticalAlignment.AlignMiddle)
+        
+        cur.insertImage(fmt)
+        self.editor.setFocus()
 
     def _new_spreadsheet(self):
         if self.is_dirty:
@@ -2460,46 +2732,62 @@ class MainWindow(QtWidgets.QMainWindow):
         cur.setBlockFormat(fmt)
         self.editor.setFocus()     
 
+    def _apply_editable_list(self, prefix, num_str, suffix):
+        """Creates a perfectly aligned, fully editable plain-text list item."""
+        self.editor._commit_composing()
+        cur = self.editor.textCursor()
+        cur.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
+        
+        # Combine everything and add a single tab for the gap
+        full_marker = f"{prefix}{num_str}{suffix}\t"
+        
+        # Calculate the exact pixel width of the marker + a tight 15px gap (much smaller!)
+        fm = QtGui.QFontMetrics(self.editor.font())
+        marker_width = fm.horizontalAdvance(f"{prefix}{num_str}{suffix}") + 15
+        
+        # Set a hanging indent so the text aligns perfectly but the prefix sits flush left
+        bf = cur.blockFormat()
+        bf.setLeftMargin(marker_width)
+        bf.setTextIndent(-marker_width)
+        bf.setTabPositions([QtGui.QTextOption.Tab(marker_width, QtGui.QTextOption.TabType.LeftTab)])
+        cur.setBlockFormat(bf)
+        
+        cur.insertText(full_marker)
+        self.editor.setFocus()
+
     def _insert_custom_numbered(self, list_style, prefix="", suffix="."):
-        # --- CUSTOM HINDI ALPHABET INSERTER ---
+        # This is where the prefix safely combines ONCE
+        final_prefix = self.custom_list_prefix + prefix
+        
+        # If the user has a custom prefix OR uses Hindi, ALWAYS use the editable system
         if list_style == "HindiAlpha":
-            cur = self.editor.textCursor()
-            cur.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
-            cur.insertText(f"{prefix}क{suffix} ")
-            self.editor.setFocus()
+            self._apply_editable_list(final_prefix, "क", suffix)
+            return
+        elif self.custom_list_prefix:
+            self._apply_editable_list(final_prefix, "1", suffix)
             return
             
-        # --- STANDARD NATIVE QT LISTS ---
+        # --- STANDARD NATIVE QT LISTS (Only used for basic 1. 2. 3. without custom prefixes) ---
         fmt = QtGui.QTextListFormat()
         fmt.setStyle(list_style)
-        fmt.setNumberPrefix(prefix)
+        fmt.setNumberPrefix(final_prefix)
         fmt.setNumberSuffix(suffix)
+        fmt.setIndent(1)
         self.editor.textCursor().createList(fmt)     
- 
+        self.editor.setFocus()
+
     def _set_custom_list_prefix(self):
         text, ok = QtWidgets.QInputDialog.getText(self, "Set Editable Prefix", "Enter prefix (e.g. 'ques'):", text=self.custom_list_prefix)
         if ok:
+            # Auto-format: add a space if the user didn't include one
+            if text and not text.endswith(' '):
+                text += ' '
+                
             self.custom_list_prefix = text
             self.menu_numbered.close()
             
-            # Format the prefix slightly
-            pfx = text.strip() + " " if text.strip() else ""
-            
-            self.editor._commit_composing()
-            cur = self.editor.textCursor()
-            cur.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
-            
-            # Create a Hanging Indent with a Tab Stop for perfect column alignment
-            bf = cur.blockFormat()
-            tab_stop = 120  # Gives space for prefixes like "ques 134."
-            bf.setTabPositions([QtGui.QTextOption.Tab(tab_stop, QtGui.QTextOption.TabType.LeftTab)])
-            bf.setLeftMargin(tab_stop)
-            bf.setTextIndent(-tab_stop)
-            cur.setBlockFormat(bf)
-            
-            # Insert editable text formatting
-            cur.insertText(f"{pfx}1.\t")
-            self.editor.setFocus()
+            # Instantly start the editable list safely using the direct method
+            self._apply_editable_list(text, "1", ".")
             self.status.showMessage(f"Editable list prefix started: '{text}'", 3000)
             
     def _insert_fraction(self):
@@ -2511,96 +2799,161 @@ class MainWindow(QtWidgets.QMainWindow):
     def _prompt_fraction(self, bracket):
         self.editor._commit_composing()
         
-        # Launch the new Math Equation Dialog
         dlg = FractionDialog(bracket, self)
         if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             num = dlg.num.text().strip()
             den = dlg.den.text().strip()
-            prefix = dlg.prefix.text().strip()
-            suffix = dlg.suffix.text().strip()
-            
             if num and den:
-                self._generate_and_insert_fraction(num, den, prefix, suffix, bracket)
+                self._generate_and_insert_fraction(
+                    num=num, den=den, 
+                    prefix=dlg.prefix.text().strip(), suffix=dlg.suffix.text().strip(), 
+                    bracket=bracket, 
+                    num_mod=dlg.num_mod.currentText(), den_mod=dlg.den_mod.currentText(),
+                    num_sup=dlg.num_sup.text().strip(), num_sub=dlg.num_sub.text().strip(),
+                    den_sup=dlg.den_sup.text().strip(), den_sub=dlg.den_sub.text().strip(),
+                    bracket_sup=dlg.bracket_sup.text().strip() if bracket else ""
+                )
 
-    def _generate_and_insert_fraction(self, num, den, prefix, suffix, bracket):
+    def _generate_and_insert_fraction(self, num, den, prefix, suffix, bracket, num_mod, den_mod, num_sup, num_sub, den_sup, den_sub, bracket_sup):
+        # 1. Base Font
         font = self.editor.font()
         font.setPointSize(self.state.font_size)
         fm = QtGui.QFontMetrics(font)
         
-        num_w = fm.horizontalAdvance(num)
-        den_w = fm.horizontalAdvance(den)
-        text_w = max(num_w, den_w)
+        # 2. Script Font (For superscripts/subscripts)
+        script_font = QtGui.QFont(font)
+        script_font.setPointSize(max(6, int(self.state.font_size * 0.65)))
+        fm_script = QtGui.QFontMetrics(script_font)
+        
+        def get_modified_text(text, mod):
+            has_root, is_over, sym = False, False, ""
+            if "Square Root" in mod: text = "√" + text; has_root = True; sym = "√"
+            elif "Cube Root" in mod: text = "∛" + text; has_root = True; sym = "∛"
+            elif "Overline" in mod: is_over = True
+            return text, has_root, sym, is_over
+
+        num, num_root, num_sym, num_over = get_modified_text(num, num_mod)
+        den, den_root, den_sym, den_over = get_modified_text(den, den_mod)
+        
+        # Calculate Widths dynamically accounting for scripts
+        def get_block_width(base_txt, sup_txt, sub_txt):
+            base_w = fm.horizontalAdvance(base_txt)
+            sup_w = fm_script.horizontalAdvance(sup_txt) if sup_txt else 0
+            sub_w = fm_script.horizontalAdvance(sub_txt) if sub_txt else 0
+            script_w = max(sup_w, sub_w) + (2 if (sup_txt or sub_txt) else 0)
+            return base_w, script_w, base_w + script_w
+
+        num_base_w, num_script_w, num_total_w = get_block_width(num, num_sup, num_sub)
+        den_base_w, den_script_w, den_total_w = get_block_width(den, den_sup, den_sub)
+        
+        text_w = max(num_total_w, den_total_w)
         line_h = fm.height()
         
         padding = 6
-        bracket_w = 10 if bracket else 0 # 10px width for each tall bracket
+        bracket_w = 10 if bracket else 0 
+        bracket_sup_w = fm_script.horizontalAdvance(bracket_sup) + 2 if bracket_sup else 0
         
-        width = text_w + (padding * 2) + (bracket_w * 2)
-        height = (line_h * 2) + 6
+        # Exact Drawing coordinates
+        content_x = bracket_w + padding
+        right_bracket_x = content_x + text_w + padding
+        power_x = right_bracket_x + bracket_w
         
-        # Create a transparent canvas
+        # (Find this section inside _generate_and_insert_fraction)
+        
+        width = int(power_x + bracket_sup_w)
+        height = int((line_h * 2) + 6)
+        mid_y = height / 2.0
+        
         img = QtGui.QImage(width, height, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
         img.fill(Qt.GlobalColor.transparent)
         
         painter = QtGui.QPainter(img)
-        painter.setFont(font)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         
-        text_color = QtGui.QColor(self.editor.textColor())
+        # --- CRITICAL FIX: Draw White Background and Black Text for perfect printing ---
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QtGui.QColor(255, 255, 255))
+        painter.drawRoundedRect(0, 0, width, height, 4, 4)
+        
+        text_color = QtGui.QColor(Qt.GlobalColor.black)
+        painter.setPen(text_color)
+        # -------------------------------------------------------------------------------
+        
+        
+        text_color = self.editor.currentCharFormat().foreground().color()
+        if not text_color.isValid() or text_color.alpha() == 0:
+            text_color = self.editor.palette().color(QtGui.QPalette.ColorRole.Text)
+            
         painter.setPen(text_color)
         
-        mid_y = height / 2
+        # --- Helper to draw text block + scripts + overlines ---
+        def draw_math_block(y_top, text, has_root, sym, is_over, sup_text, sub_text, block_w, base_w):
+            start_x = content_x + (text_w - block_w) / 2.0
+            
+            painter.setFont(font)
+            painter.drawText(QtCore.QRectF(start_x, y_top, base_w, line_h), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, text)
+            
+            if has_root or is_over:
+                line_y = y_top + line_h - fm.ascent() + 2 
+                if has_root:
+                    sym_w = fm.horizontalAdvance(sym)
+                    painter.drawLine(int(start_x + sym_w - 2), int(line_y), int(start_x + base_w + 1), int(line_y))
+                elif is_over:
+                    painter.drawLine(int(start_x), int(line_y), int(start_x + base_w), int(line_y))
+                    
+            if sup_text or sub_text:
+                painter.setFont(script_font)
+                script_x = start_x + base_w + 2
+                if sup_text:
+                    painter.drawText(QtCore.QRectF(script_x, y_top, block_w - base_w, line_h * 0.6), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, sup_text)
+                if sub_text:
+                    painter.drawText(QtCore.QRectF(script_x, y_top + line_h * 0.4, block_w - base_w, line_h * 0.6), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, sub_text)
+
+        # 1. Draw Blocks
+        draw_math_block(0, num, num_root, num_sym, num_over, num_sup, num_sub, num_total_w, num_base_w)
+        draw_math_block(mid_y + 2, den, den_root, den_sym, den_over, den_sup, den_sub, den_total_w, den_base_w)
         
-        # Draw Numerator & Denominator
-        painter.drawText(QtCore.QRectF(bracket_w + padding, 0, text_w, line_h), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, num)
-        painter.drawText(QtCore.QRectF(bracket_w + padding, mid_y + 2, text_w, line_h), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, den)
+        # 2. Draw Divider Line
+        painter.drawLine(int(content_x), int(mid_y), int(content_x + text_w), int(mid_y))
         
-        # Draw Divider Line
-        painter.drawLine(int(bracket_w + padding), int(mid_y), int(bracket_w + padding + text_w), int(mid_y))
-        
-        # Draw FULL HEIGHT Brackets using Bezier Curves
+        # 3. Draw FULL HEIGHT Brackets & Bracket Power
         if bracket:
             pen = QtGui.QPen(text_color, 1.5)
             painter.setPen(pen)
             
-            # Left Bracket (
             path1 = QtGui.QPainterPath()
             path1.moveTo(bracket_w, 2)
             path1.quadTo(1, mid_y, bracket_w, height - 2)
             painter.drawPath(path1)
             
-            # Right Bracket )
             path2 = QtGui.QPainterPath()
-            path2.moveTo(width - bracket_w, 2)
-            path2.quadTo(width - 1, mid_y, width - bracket_w, height - 2)
+            path2.moveTo(right_bracket_x, 2)
+            path2.quadTo(right_bracket_x + bracket_w - 1, mid_y, right_bracket_x, height - 2)
             painter.drawPath(path2)
+            
+            if bracket_sup:
+                painter.setFont(script_font)
+                painter.drawText(QtCore.QRectF(power_x, 0, bracket_sup_w, height / 2.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, bracket_sup)
             
         painter.end()
         
-        # Add to document resources
+        # Bind the image securely
         doc = self.editor.document()
         img_name = f"frac_{uuid.uuid4().hex[:8]}.png"
-        doc.addResource(QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(img_name), img)
+        url = QtCore.QUrl(img_name)
+        doc.addResource(QtGui.QTextDocument.ResourceType.ImageResource, url, img)
         
         cur = self.editor.textCursor()
-        
-        # Format the Image to align mathematically in the center of the line!
         fmt = QtGui.QTextImageFormat()
-        fmt.setName(img_name)
+        fmt.setName(url.toString())
+        fmt.setWidth(width)
+        fmt.setHeight(height)
         fmt.setVerticalAlignment(QtGui.QTextCharFormat.VerticalAlignment.AlignMiddle) 
         
-        # 1. Insert Prefix Operators (e.g., "x = ")
-        if prefix:
-            cur.insertText(prefix + " ")
-            
-        # 2. Insert the Vertical Fraction Image
+        if prefix: cur.insertText(prefix + " ")
         cur.insertImage(fmt)
-        
-        # 3. Insert Suffix Operators (e.g., " + ")
-        if suffix:
-            cur.insertText(" " + suffix + " ")
-        else:
-            cur.insertText(" ")
+        if suffix: cur.insertText(" " + suffix + " ")
+        else: cur.insertText(" ")
             
         self.editor.setFocus()
 
@@ -2904,6 +3257,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # Add these two lines to handle the English translation signal
         elif action == "context_translate_en":
             self._translate_selection_to_english()
+            
+        # --- NEW: Catch Math Wrapper Signals ---
+        elif action.startswith("math_wrap_"):
+            self._wrap_selection_in_math(action.split("_")[2])
+        # ---------------------------------------
                 
 
     def _setup_actions(self):
@@ -2912,8 +3270,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.act_open = QtGui.QAction("Open", self, shortcut="Ctrl+O", triggered=self._open_file)
         self.act_save = QtGui.QAction("Save", self, shortcut="Ctrl+S", triggered=self._save_manual)
         self.act_save_html = QtGui.QAction("Save as HTML", self, triggered=self._save_html)
+        # (Inside _setup_actions, find these lines:)
         self.act_save_docx = QtGui.QAction("Save as DOCX", self, triggered=self._save_docx)
         self.act_export_pdf = QtGui.QAction("Export as PDF", self, triggered=self._export_pdf)
+        
+        # (Inside _setup_actions, find this line:)
+        self.act_launch = QtGui.QAction("Launch in Default App", self, shortcut="F5", triggered=self._launch_in_default_app)
+        
+        # --- ADD THIS LINE ---
+        self.act_launch_any = QtGui.QAction("Launch Any File...", self, triggered=self._launch_any_file)
+        # ---------------------
+        
         self.act_page_setup = QtGui.QAction("Page Setup...", self, triggered=self._page_setup)
         self.act_print = QtGui.QAction("Print (Preview)", self, shortcut="Ctrl+P", triggered=self._print_doc)
         
@@ -3031,13 +3398,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.addToolBarBreak() 
         tb_fmt = QtWidgets.QToolBar("Format")
+        tb_fmt.setIconSize(QtCore.QSize(20, 20)) # Uniform, professional icon size
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_fmt)
 
-        # REplace the existing add_fmt function and the format buttons below it with this:
-        def add_fmt(text, slot, shortcut=None, tooltip=None):
+        def add_fmt(text, slot, shortcut=None, tooltip=None, icon_file=None):
             a = QtGui.QAction(text, self)
+            # Try to load real icon if it exists in the 'icons' folder
+            if icon_file:
+                icon_path = os.path.join("icons", icon_file)
+                if os.path.exists(icon_path):
+                    a.setIcon(QtGui.QIcon(icon_path))
+                    
             if shortcut: a.setShortcut(shortcut)
-            if tooltip: a.setToolTip(tooltip)
+            a.setToolTip(tooltip if tooltip else text)
             a.triggered.connect(slot)
             tb_fmt.addAction(a)
 
@@ -3052,36 +3425,39 @@ class MainWindow(QtWidgets.QMainWindow):
         self.font_size_spin.valueChanged.connect(self._font_size_changed)
         tb_fmt.addWidget(self.font_size_spin)
 
-        add_fmt("Color", self._choose_text_color)
-        add_fmt("Highlight", self._choose_highlight)
-        tb_fmt.addSeparator()
-        add_fmt("B", lambda: self._toggle_format('bold'), "Ctrl+B", "Bold")
-        add_fmt("I", lambda: self._toggle_format('italic'), "Ctrl+I", "Italic")
-        add_fmt("U", lambda: self._toggle_format('underline'), "Ctrl+U", "Underline")
-        add_fmt("S", lambda: self._toggle_format('strike'), tooltip="Strikethrough")
-        tb_fmt.addSeparator()
-        add_fmt("X₂", lambda: self._toggle_format('subscript'), "Ctrl+=", "Subscript")
-        add_fmt("X²", lambda: self._toggle_format('superscript'), "Ctrl+Shift++", "Superscript")
+        # Polished Fallback Symbols + Icon Support
+        add_fmt("🎨", self._choose_text_color, tooltip="Text Color", icon_file="color.png")
+        add_fmt("🖍️", self._choose_highlight, tooltip="Highlight Color", icon_file="highlight.png")
         tb_fmt.addSeparator()
         
-        # --- NEW VERTICAL FRACTION BUTTONS ---
-        add_fmt("a/b", self._insert_fraction, tooltip="Insert Vertical Fraction")
-        add_fmt("(a/b)", self._insert_bracket_fraction, tooltip="Insert Bracketed Vertical Fraction")
-        # -------------------------------------
-        
-        tb_fmt.addSeparator()
-        add_fmt("L", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignLeft), tooltip="Align Left")
-        add_fmt("C", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignCenter), tooltip="Align Center")
-        add_fmt("R", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignRight), tooltip="Align Right")
-        add_fmt("J", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignJustify), tooltip="Justify")
+        add_fmt("𝐁", lambda: self._toggle_format('bold'), "Ctrl+B", "Bold", icon_file="bold.png")
+        add_fmt("𝐼", lambda: self._toggle_format('italic'), "Ctrl+I", "Italic", icon_file="italic.png")
+        add_fmt("U̲", lambda: self._toggle_format('underline'), "Ctrl+U", "Underline", icon_file="underline.png")
+        add_fmt("S̶", lambda: self._toggle_format('strike'), tooltip="Strikethrough", icon_file="strike.png")
         tb_fmt.addSeparator()
         
-        add_fmt("I+", lambda: self._modify_indent(1), shortcut="Tab", tooltip="Increase Indent")
-        add_fmt("I-", lambda: self._modify_indent(-1), shortcut="Shift+Tab", tooltip="Decrease Indent")
+        add_fmt("X₂", lambda: self._toggle_format('subscript'), "Ctrl+=", "Subscript", icon_file="subscript.png")
+        add_fmt("X²", lambda: self._toggle_format('superscript'), "Ctrl+Shift++", "Superscript", icon_file="superscript.png")
+        tb_fmt.addSeparator()
         
-        # Line Spacing Menu
+        add_fmt("a/b", self._insert_fraction, tooltip="Insert Vertical Fraction", icon_file="fraction.png")
+        add_fmt("(a/b)", self._insert_bracket_fraction, tooltip="Insert Bracketed Vertical Fraction", icon_file="fraction_bracket.png")
+        tb_fmt.addSeparator()
+        
+        add_fmt("⫷", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignLeft), tooltip="Align Left", icon_file="align_left.png")
+        add_fmt("≡", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignCenter), tooltip="Align Center", icon_file="align_center.png")
+        add_fmt("⫸", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignRight), tooltip="Align Right", icon_file="align_right.png")
+        add_fmt("▤", lambda: self.editor.setAlignment(Qt.AlignmentFlag.AlignJustify), tooltip="Justify", icon_file="align_justify.png")
+        tb_fmt.addSeparator()
+        
+        add_fmt("⇥", lambda: self._modify_indent(1), shortcut="Tab", tooltip="Increase Indent", icon_file="indent_inc.png")
+        add_fmt("⇤", lambda: self._modify_indent(-1), shortcut="Shift+Tab", tooltip="Decrease Indent", icon_file="indent_dec.png")
+        
+        # Spacing Menu Button
         self.btn_spacing = QtWidgets.QToolButton()
-        self.btn_spacing.setText("Spacing")
+        self.btn_spacing.setText("↕")
+        self.btn_spacing.setToolTip("Line Spacing")
+        if os.path.exists("icons/spacing.png"): self.btn_spacing.setIcon(QtGui.QIcon("icons/spacing.png"))
         self.btn_spacing.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.menu_spacing = QtWidgets.QMenu(self.btn_spacing)
         self.btn_spacing.setMenu(self.menu_spacing)
@@ -3090,16 +3466,19 @@ class MainWindow(QtWidgets.QMainWindow):
         spacing_options = [("0.5", 50), ("0.8", 80), ("1.0", 100), ("1.15", 115), ("1.5", 150), ("2.0", 200)]
         for space, val in spacing_options:
             self.menu_spacing.addAction(space, lambda v=val: self._set_line_spacing(v))
-        
         tb_fmt.addWidget(self.btn_spacing)       
         
-        add_fmt("Bullet", self._insert_bullet)
+        add_fmt("•—", self._insert_bullet, tooltip="Bullet List", icon_file="bullet.png")
         
+        # Numbered Menu Button
         self.btn_numbered = QtWidgets.QToolButton()
-        self.btn_numbered.setText("Numbered")
+        self.btn_numbered.setText("1.—")
+        self.btn_numbered.setToolTip("Numbered List")
+        if os.path.exists("icons/numbered.png"): self.btn_numbered.setIcon(QtGui.QIcon("icons/numbered.png"))
         self.btn_numbered.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.menu_numbered = QtWidgets.QMenu(self.btn_numbered)
         self.btn_numbered.setMenu(self.menu_numbered)
+        
         
         # -----------------------------------------------------------------------------------------
         from PySide6.QtWidgets import QWidgetAction, QWidget, QGridLayout, QPushButton
@@ -3145,9 +3524,10 @@ class MainWindow(QtWidgets.QMainWindow):
         for index, (label, style_fmt, prefix, suffix) in enumerate(styles):
             btn = QPushButton(label)
             btn.setFixedWidth(65)
-            # --- MODIFY THE LAMBDA BELOW ---
+            
+            # --- FIX: Removed self.custom_list_prefix from here ---
             btn.clicked.connect(lambda checked=False, s=style_fmt, p=prefix, sx=suffix: [
-                self._insert_custom_numbered(s, self.custom_list_prefix + p, sx),
+                self._insert_custom_numbered(s, p, sx),
                 self.menu_numbered.close()
             ])
             
@@ -3173,8 +3553,59 @@ class MainWindow(QtWidgets.QMainWindow):
         # -----------------------------------------------------------------------------------------
         
         tb_fmt.addSeparator()
-        add_fmt("Table", self._insert_table)
-        add_fmt("Image", self._insert_image)
+        add_fmt("▦", self._insert_table, tooltip="Insert Table", icon_file="table.png")
+        add_fmt("🖼️", self._insert_image, tooltip="Insert Image", icon_file="image.png")
+        
+        # --- NEW SYMBOLS MENU BUTTON ---
+        self.btn_symbols = QtWidgets.QToolButton()
+        self.btn_symbols.setText("Ω") # Fallback text if no icon
+        self.btn_symbols.setToolTip("Insert Symbol")
+        if os.path.exists("icons/symbols.png"): 
+            self.btn_symbols.setIcon(QtGui.QIcon("icons/symbols.png"))
+        self.btn_symbols.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.menu_symbols = QtWidgets.QMenu(self.btn_symbols)
+        self.btn_symbols.setMenu(self.menu_symbols)
+        
+        from PySide6.QtWidgets import QWidgetAction, QWidget, QGridLayout, QPushButton
+        
+        sym_widget = QWidget()
+        sym_layout = QGridLayout(sym_widget)
+        sym_layout.setContentsMargins(5, 5, 5, 5)
+        sym_layout.setSpacing(2)
+        
+        # Comprehensive list of arrows, math symbols, and currencies (including ₹)
+        symbols_list = [
+            "←", "↑", "→", "↓", "↔", "↕", "↖", "↗", "↘", "↙",
+            "÷", "×", "±", "≠", "≈", "≤", "≥", "∞", "√", "π",
+            "©", "®", "™", "°", "•", "·", "§", "†", "‡", "€",
+            "£", "¥", "₹", "¢", "µ", "∆", "∑", "∫", "Ω", "β"
+        ]
+        
+        for idx, sym in enumerate(symbols_list):
+            btn = QPushButton(sym)
+            btn.setFixedSize(30, 30) # Perfect square buttons
+            font = btn.font()
+            font.setPointSize(12)
+            btn.setFont(font)
+            
+            # Using your existing robust insertion router so it works in Spreadsheets too!
+            btn.clicked.connect(lambda checked=False, s=sym: [
+                self._insert_phrase_to_active_focus(s),
+                self.menu_symbols.close()
+            ])
+            
+            # Organize into 10 columns wide
+            r = idx // 10
+            c = idx % 10
+            sym_layout.addWidget(btn, r, c)
+            
+        sym_action = QWidgetAction(self)
+        sym_action.setDefaultWidget(sym_widget)
+        self.menu_symbols.addAction(sym_action)
+        
+        tb_fmt.addWidget(self.btn_symbols)
+        # --------------------------------
+        
         tb_fmt.addSeparator()
 
         # Create an expanding spacer widget to push the voice indicator to the right side of tb_file
@@ -3208,6 +3639,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_menus(self):
         men = self.menuBar()
+        # (Inside _build_menus, find the filem section:)
         filem = men.addMenu("&File")
         filem.addAction(self.act_new)
         filem.addAction(self.act_open)
@@ -3216,7 +3648,18 @@ class MainWindow(QtWidgets.QMainWindow):
         filem.addAction(self.act_save_docx)
         filem.addAction(self.act_save_html)
         filem.addAction(self.act_export_pdf)
+        
+        # (Inside _build_menus, find the filem section:)
         filem.addSeparator()
+        filem.addAction(self.act_launch)
+        
+        # --- ADD THIS LINE ---
+        filem.addAction(self.act_launch_any)
+        # ---------------------
+        
+        filem.addSeparator()
+
+        
        # --- NEW SPREADSHEET MENUS ---
         filem.addAction("New Spreadsheet", self._new_spreadsheet)
         filem.addAction("Open Spreadsheet (.xls, .csv)...", self._open_spreadsheet)
