@@ -2675,17 +2675,11 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QApplication.processEvents()
         
         try:
-            # Ping Google Translate API (Auto-detect to English)
-            url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=" + urllib.parse.quote(text)
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            response = urllib.request.urlopen(req, timeout=3)
-            data = json.loads(response.read().decode('utf-8'))
-            translated_text = "".join([sentence[0] for sentence in data[0]])
-            
+            translated_text = self._fetch_translation(text, sl="auto", tl="en")
             cur.insertText(translated_text)
             self.status.showMessage("Translated successfully.", 2000)
         except Exception as e:
-            self.status.showMessage("Translation failed. Check internet connection.", 3000)
+            self.status.showMessage("Translation failed (Rate Limit). Try again later.", 4000)
             logging.error(f"Translation error: {e}")
 
     def _translate_selection(self):
@@ -2697,22 +2691,83 @@ class MainWindow(QtWidgets.QMainWindow):
         text = cur.selectedText().strip()
         if not text: return
         
-        self.status.showMessage("Translating...")
+        self.status.showMessage("Translating to Hindi...")
         QtWidgets.QApplication.processEvents()
         
         try:
-            # Ping Google Translate API
-            url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=hi&dt=t&q=" + urllib.parse.quote(text)
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            response = urllib.request.urlopen(req, timeout=3)
-            data = json.loads(response.read().decode('utf-8'))
-            translated_text = "".join([sentence[0] for sentence in data[0]])
-            
+            translated_text = self._fetch_translation(text, sl="en", tl="hi")
             cur.insertText(translated_text)
             self.status.showMessage("Translated successfully.", 2000)
         except Exception as e:
-            self.status.showMessage("Translation failed. Check internet connection.", 3000)
+            self.status.showMessage("Translation failed (Rate Limit). Try again later.", 4000)
             logging.error(f"Translation error: {e}")
+
+    def _fetch_translation(self, text, sl, tl):
+        """Robust translation fetching with Cookies, User-Agent Rotation, and Mobile Scraper to bypass HTTP 429."""
+        import html as html_lib
+        import random
+        import http.cookiejar
+        
+        # 1. Maintain a persistent Session with Cookies! 
+        # This is the secret to stopping 429s. Google's servers will send an 'NID' cookie, 
+        # and this opener will hold onto it and send it back, proving you aren't a spam bot.
+        if not hasattr(self, 'web_opener'):
+            self.cookie_jar = http.cookiejar.CookieJar()
+            self.web_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookie_jar))
+
+        # 2. Rotate modern browser identities so the footprint constantly changes
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        ]
+        headers = {'User-Agent': random.choice(user_agents)}
+        
+        # --- Primary: Google API (GTX Endpoint) ---
+        try:
+            url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={sl}&tl={tl}&dt=t&q=" + urllib.parse.quote(text)
+            req = urllib.request.Request(url, headers=headers)
+            # Use our custom cookie-saving opener instead of the standard urlopen
+            response = self.web_opener.open(req, timeout=4)
+            data = json.loads(response.read().decode('utf-8'))
+            return "".join([sentence[0] for sentence in data[0] if sentence[0]])
+        
+        except Exception as e:
+            logging.warning(f"Google GTX API Blocked ({e}). Switching to Mobile Web Scraper...")
+
+        # --- HIGH ACCURACY FALLBACK: Google Mobile Web Scraper ---
+        try:
+            # We spoof a very modern Samsung Galaxy S23 Ultra to hit the mobile web page
+            mobile_headers = {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36'
+            }
+            url = f"https://translate.google.com/m?sl={sl}&tl={tl}&q=" + urllib.parse.quote(text)
+            req = urllib.request.Request(url, headers=mobile_headers)
+            response = self.web_opener.open(req, timeout=5)
+            html_data = response.read().decode('utf-8')
+            
+            # Scrape the exact translated text
+            match = re.search(r'<div[^>]*class="result-container"[^>]*>(.*?)</div>', html_data, re.IGNORECASE | re.DOTALL)
+            if match:
+                return html_lib.unescape(match.group(1).strip())
+                
+        except Exception as e:
+            logging.warning(f"Google Mobile Scraper failed ({e}). Switching to Lingva Proxy...")
+
+        # --- Last Resort: Lingva Proxy ---
+        try:
+            lingva_sl = "auto" if sl == "auto" else sl
+            url = f"https://lingva.ml/api/v1/{lingva_sl}/{tl}/" + urllib.parse.quote(text)
+            req = urllib.request.Request(url, headers=headers)
+            response = self.web_opener.open(req, timeout=5)
+            data = json.loads(response.read().decode('utf-8'))
+            if "translation" in data:
+                return data["translation"]
+        except Exception as e:
+            logging.error(f"All translation engines failed: {e}")
+
+        raise Exception("Translation blocked by Google. Please wait a few minutes.")
         
     def _modify_indent(self, delta):
         cur = self.editor.textCursor()
