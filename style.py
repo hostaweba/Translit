@@ -12,6 +12,11 @@ def get_main_theme(is_dark: bool) -> str:
             }
             QLabel, QCheckBox, QRadioButton, QGroupBox { color: #f9fafb; }
             
+            /* Tooltips (Fixes Ctrl+Space text color bug) */
+            QToolTip { 
+                background-color: #2b2b2b; color: #10b981;
+                border: 1px solid #444444; border-radius: 4px; padding: 4px; 
+            }
             /* --- TAB WIDGET (DARK) --- */
             QTabWidget::pane { border: 1px solid #374151; border-radius: 4px; background-color: #1f2937; }
             QTabBar::tab { background-color: #111827; color: #d1d5db; border: 1px solid #374151; padding: 6px 12px; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 2px; }
@@ -41,7 +46,10 @@ def get_main_theme(is_dark: bool) -> str:
             
             QMenu { background-color: #1f2937; color: #f9fafb; border: 1px solid #4b5563; border-radius: 4px; padding: 2px; }
             QMenu::item { padding: 4px 20px 4px 12px; border-radius: 3px; background-color: transparent; }
-            QMenu::item:selected { background-color: #059669; color: white; }
+                
+            /* Update Context Menus */
+            QMenu::item:selected { background-color: rgba(4, 120, 87, 0.6); color: white; border-radius: 3px; }  
+                
             QMenu::separator { background-color: #4b5563; height: 1px; margin: 2px 0px; }
             
             QLineEdit, QSpinBox, QDoubleSpinBox, QFontComboBox, QComboBox { 
@@ -54,6 +62,22 @@ def get_main_theme(is_dark: bool) -> str:
             QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 14px; background: transparent; border-left: 1px solid #4b5563; }
             QSpinBox::up-button:hover, QSpinBox::down-button:hover, QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover { background: #374151; }
             
+            /* Fix Dropdown popup lists inheriting white OS theme */
+            QComboBox QAbstractItemView {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #444444;
+                selection-background-color: rgba(74, 222, 128, 0.2);
+                selection-color: #4ade80;
+            }
+            
+            /* Fix Checkboxes */
+            QCheckBox { color: #ffffff; spacing: 8px; }
+            QCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px; border: 1px solid #666666; background-color: #333333; }
+            QCheckBox::indicator:hover { border: 1px solid #4ade80; }
+            QCheckBox::indicator:checked { background-color: #4ade80; border: 1px solid #4ade80; image: url(""); } /* Uses default tick */
+            
+            /* --- BUTTONS --- */
             QPushButton { 
                 background-color: #374151; color: #f9fafb; 
                 border: 1px solid #4b5563; border-radius: 3px; 
@@ -68,7 +92,9 @@ def get_main_theme(is_dark: bool) -> str:
             
             QListWidget, QTableWidget { background-color: #1f2937; border: 1px solid #374151; color: #f9fafb; border-radius: 4px; }
             QListWidget::item, QTableWidget::item { padding: 4px; border-radius: 3px; }
-            QListWidget::item:selected, QTableWidget::item:selected { background-color: #059669; color: #ffffff; }
+            
+            /* Update Phrase List, Dict Table, Suggestion Table selections */
+            QListWidget::item:selected, QTableWidget::item:selected { background-color: rgba(4, 120, 87, 0.6); color: #ffffff; }
             
             QScrollArea { background-color: transparent; border: none; }
             QFrame#page_frame { background-color: #1f2937; border: 1px solid #374151; border-radius: 4px; }
@@ -77,7 +103,7 @@ def get_main_theme(is_dark: bool) -> str:
             QStatusBar QLabel { color: #d1d5db; background: transparent; padding: 0px; }
             QTextEdit { background-color: transparent; color: #f9fafb; border: none; }
             
-            QLabel#TopClock { color: #4ade80; font-weight: 800; font-size: 18px; padding-right: 12px; margin: 0px; }
+            QLabel#TopClock { color: #10b981; font-weight: 800; font-size: 18px; padding-right: 12px; margin: 0px; }
             
             QTableWidget QLineEdit { background-color: #374151; color: #ffffff; border: none; padding: 0px; margin: 0px; outline: none; }
         """
@@ -89,6 +115,16 @@ def get_main_theme(is_dark: bool) -> str:
             }
             QLabel, QCheckBox, QRadioButton, QGroupBox { color: #111827; }
             
+            /* Tooltips  */
+            QToolTip { 
+                background-color: #ffffff; /* Attempts to paint white */
+                color: #10b981; /* Bright Emerald Green - visible on both black and white! */
+                border: 1px solid #cccccc; 
+                border-radius: 4px; 
+                padding: 4px; 
+            }
+            
+
             /* --- TAB WIDGET (LIGHT) --- */
             QTabWidget::pane { border: 1px solid #d1d5db; border-radius: 4px; background-color: #ffffff; }
             QTabBar::tab { background-color: #f3f4f6; color: #4b5563; border: 1px solid #d1d5db; padding: 6px 12px; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 2px; }
@@ -126,11 +162,23 @@ def get_main_theme(is_dark: bool) -> str:
                 border: 1px solid #d1d5db; border-radius: 3px; 
                 padding: 1px 6px; height: 20px; margin: 0px 2px; 
             }
-            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QFontComboBox:focus, QComboBox:focus { border: 1px solid #3b82f6; background-color: #ffffff; }
+            QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border: 1px solid #059669; }
             
-            QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 14px; background: transparent; border-left: 1px solid #d1d5db; }
-            QSpinBox::up-button:hover, QSpinBox::down-button:hover, QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover { background: #f3f4f6; }
+            QComboBox QAbstractItemView {
+                background-color: #ffffff;
+                color: #111111;
+                border: 1px solid #cccccc;
+                selection-background-color: rgba(5, 150, 105, 0.15);
+                selection-color: #059669;
+            }
             
+            /* Fix Checkboxes for Light Theme */
+            QCheckBox { color: #111111; spacing: 8px; }
+            QCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px; border: 1px solid #999999; background-color: #ffffff; }
+            QCheckBox::indicator:hover { border: 1px solid #059669; }
+            QCheckBox::indicator:checked { background-color: #059669; border: 1px solid #059669; image: url(""); }
+            
+            /* --- BUTTONS --- */
             QPushButton { 
                 background-color: #ffffff; color: #111827; 
                 border: 1px solid #d1d5db; border-radius: 3px; 
@@ -150,11 +198,33 @@ def get_main_theme(is_dark: bool) -> str:
             QScrollArea { background-color: transparent; border: none; }
             QFrame#page_frame { background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 4px; }
             
-            QPrintPreviewDialog { background-color: #e5e7eb; }
-            QPrintPreviewDialog QToolBar { background-color: #1f2937; border-bottom: 1px solid #111827; padding: 4px; }
-            QPrintPreviewDialog QToolButton { background-color: transparent; color: #f9fafb; border: 1px solid transparent; border-radius: 3px; padding: 4px; margin: 0px 2px; height: 20px;}
-            QPrintPreviewDialog QToolButton:hover { background-color: #374151; border: 1px solid #4b5563; }
-            QPrintPreviewDialog QToolButton:pressed { background-color: #111827; }
+            QPrintPreviewDialog { background-color: #f3f4f6; }
+            
+            /* Neutral grey toolbar background (#9ca3af) */
+            QPrintPreviewDialog QToolBar { 
+                background-color: #9ca3af; 
+                border-bottom: 1px solid #6b7280; 
+                padding: 4px; 
+            }
+            
+            QPrintPreviewDialog QToolButton { 
+                background-color: transparent; 
+                color: #111827; 
+                border: 1px solid transparent; 
+                border-radius: 3px; 
+                padding: 4px; 
+                margin: 0px 2px; 
+                height: 20px;
+            }
+            
+            QPrintPreviewDialog QToolButton:hover { 
+                background-color: #d1d5db; 
+                border: 1px solid #6b7280; 
+            }
+            
+            QPrintPreviewDialog QToolButton:pressed { 
+                background-color: #6b7280; 
+            }
             
             QStatusBar { background-color: #ffffff; color: #374151; border-top: 1px solid #e5e7eb; min-height: 20px; }
             QStatusBar QLabel { color: #374151; background: transparent; padding: 0px; }
@@ -163,71 +233,6 @@ def get_main_theme(is_dark: bool) -> str:
             QLabel#TopClock { color: darkgreen; font-weight: 800; font-size: 18px; padding-right: 12px; margin: 0px; }
             
             QTableWidget QLineEdit { background-color: #ffffff; color: #000000; border: none; padding: 0px; margin: 0px; outline: none; }
-        """
-
-def get_popup_style(sugg_style: str, is_dark: bool, sugg_text_color: str, size: int, is_bold: bool, spacing_level: str) -> str:
-    bg = "rgba(31, 41, 55, 245)" if is_dark else "rgba(255, 255, 255, 250)"
-    border = "#4b5563" if is_dark else "#d1d5db"
-    fg = sugg_text_color if sugg_text_color else ("#f9fafb" if is_dark else "#111827")
-    fw = "bold" if is_bold else "normal"
-
-    if spacing_level == "Compact":
-        pad = "4px 8px"
-    elif spacing_level == "Relaxed":
-        pad = "12px 16px"
-    else: 
-        pad = "8px 12px"
-
-    if sugg_style == "Google (Search Style)":
-        g_bg = "#202124" if is_dark else "#ffffff"
-        g_fg = "#e8eaed" if is_dark else "#202124"
-        g_sel = "#3c4043" if is_dark else "#f1f3f4"
-        g_hov = "rgba(255, 255, 255, 0.1)" if is_dark else "rgba(0, 0, 0, 0.05)"
-        g_border = "#5f6368" if is_dark else "#dfe1e5"
-        
-        return f"""
-            QListWidget {{ background-color: {g_bg}; color: {g_fg}; border: 1px solid {g_border}; border-radius: 8px; font-size: {size}px; font-weight: {fw}; outline: none; }}
-            QListWidget::item {{ padding: {pad}; border-radius: 0px; }}
-            QListWidget::item:hover {{ background-color: {g_hov}; }}
-            QListWidget::item:selected {{ background-color: {g_sel}; color: {g_fg}; }}
-        """
-    elif sugg_style == "Modern":
-        sel_bg = "#3b82f6"
-        hov_bg = "rgba(59, 130, 246, 0.2)"
-        return f"""
-            QListWidget {{ background-color: {bg}; color: {fg}; border: 1px solid {border}; border-radius: 12px; font-size: {size}px; font-weight: {fw}; outline: none; }}
-            QListWidget::item {{ padding: {pad}; border-radius: 6px; }}
-            QListWidget::item:hover {{ background-color: {hov_bg}; }}
-            QListWidget::item:selected {{ background-color: {sel_bg}; color: white; }}
-        """
-    elif sugg_style == "Minimalist":
-        accent = "#10b981"
-        sel_bg = "rgba(16, 185, 129, 0.15)" if is_dark else "rgba(16, 185, 129, 0.2)"
-        hov_bg = "rgba(16, 185, 129, 0.08)"
-        return f"""
-            QListWidget {{ background-color: {bg}; color: {fg}; border-left: 4px solid {accent}; border-top: 1px solid {border}; border-right: 1px solid {border}; border-bottom: 1px solid {border}; font-size: {size}px; font-weight: {fw}; outline: none; }}
-            QListWidget::item {{ padding: {pad}; border-bottom: 1px solid transparent; }}
-            QListWidget::item:hover {{ background-color: {hov_bg}; }}
-            QListWidget::item:selected {{ background-color: {sel_bg}; color: {accent}; }}
-        """
-    elif sugg_style == "Neon":
-        accent = "#38bdf8" if is_dark else "#0ea5e9"
-        neon_fg = sugg_text_color if sugg_text_color else accent
-        hov_bg = "rgba(56, 189, 248, 0.15)" if is_dark else "rgba(14, 165, 233, 0.15)"
-        return f"""
-            QListWidget {{ background-color: #0f172a; color: {neon_fg}; border: 2px solid {accent}; border-radius: 8px; font-size: {size}px; font-weight: {fw}; outline: none; }}
-            QListWidget::item {{ padding: {pad}; border-radius: 4px; }}
-            QListWidget::item:hover {{ background-color: {hov_bg}; }}
-            QListWidget::item:selected {{ background-color: {accent}; color: #0f172a; font-weight: bold; }}
-        """
-    else: # Classic
-        sel_bg = "#059669"
-        hov_bg = "rgba(5, 150, 105, 0.15)"
-        return f"""
-            QListWidget {{ background-color: {bg}; color: {fg}; border: 1px solid {border}; border-radius: 8px; font-size: {size}px; font-weight: {fw}; outline: none; }}
-            QListWidget::item {{ padding: {pad}; border-radius: 4px; }}
-            QListWidget::item:hover {{ background-color: {hov_bg}; }}
-            QListWidget::item:selected {{ background-color: {sel_bg}; color: white; }}
         """
 
 def get_popup_style(sugg_style: str, is_dark: bool, sugg_text_color: str, size: int, is_bold: bool, spacing_level: str) -> str:
